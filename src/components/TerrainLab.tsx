@@ -137,6 +137,7 @@ export default function TerrainLab() {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<StatusInfo | null>(null);
   const [coverage, setCoverage] = useState<CoverageItem[]>([]);
+  const [progress, setProgress] = useState<number | null>(null);
 
   const paramsRef = useRef(params);
   paramsRef.current = params;
@@ -152,6 +153,7 @@ export default function TerrainLab() {
   const terrainMeshRef = useRef<THREE.Mesh | null>(null);
   const waterMeshRef = useRef<THREE.Mesh | null>(null);
   const gridRef = useRef<THREE.LineSegments | null>(null);
+  const genTokenRef = useRef(0);
 
   const set = <K extends keyof TerrainParams>(key: K, value: TerrainParams[K]) =>
     setParams((p) => ({ ...p, [key]: value }));
@@ -160,9 +162,9 @@ export default function TerrainLab() {
 
   /* ---------- 构建函数 ---------- */
 
-  const buildSurface = (P: TerrainParams, model: TerrainModel) => {
+  const buildSurface = async (P: TerrainParams, model: TerrainModel, token: number): Promise<boolean> => {
     const scene = sceneRef.current;
-    if (!scene) return;
+    if (!scene) return false;
     const sizeX = P.worldSizeX;
     const sizeY = P.worldSizeY;
     const res = P.resolution;
@@ -252,6 +254,20 @@ export default function TerrainLab() {
         colors[idx * 3 + 1] = g;
         colors[idx * 3 + 2] = b;
       }
+      /* 每 8 行让出主线程并汇报进度；若已被更新的生成任务取代则放弃本次构建 */
+      if ((i & 7) === 0 || i === res - 1) {
+        if (token !== genTokenRef.current) {
+          geo.dispose();
+          return false;
+        }
+        setProgress((i + 1) / res);
+        await new Promise<void>((r) => window.setTimeout(r, 0));
+      }
+    }
+
+    if (token !== genTokenRef.current) {
+      geo.dispose();
+      return false;
     }
 
     geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
@@ -282,6 +298,7 @@ export default function TerrainLab() {
       { label: "平原", color: "#4f7a3a", pct: pct(counts.plains) },
       { label: "海洋", color: "#1a6baa", pct: pct(counts.ocean) },
     ]);
+    return true;
   };
 
   const buildCrossSection = (P: TerrainParams, model: TerrainModel) => {
@@ -394,19 +411,24 @@ export default function TerrainLab() {
 
   const generate = () => {
     if (!rendererRef.current || !sceneRef.current) return;
+    const token = ++genTokenRef.current;
     setBusy(true);
-    window.setTimeout(() => {
+    setProgress(0);
+    window.setTimeout(async () => {
       try {
         const t0 = performance.now();
         const P = clampParams(paramsRef.current);
         const model = new TerrainModel(P);
-        buildSurface(P, model);
+        const ok = await buildSurface(P, model, token);
+        if (!ok) return; /* 已被更新的生成任务取代 */
         buildCrossSection(P, model);
         buildTileGrid(P, model);
         updateCameraForSize(P, model);
         const ms = Math.round(performance.now() - t0);
         const tilesX = Math.max(1, Math.round(P.worldSizeX / P.tileSize));
         const tilesY = Math.max(1, Math.round(P.worldSizeY / P.tileSize));
+        const verts = P.resolution * P.resolution;
+        const spacing = (P.sampleXMax - P.sampleXMin) / (P.resolution - 1);
         setStatus({
           error: false,
           ms,
@@ -415,12 +437,16 @@ export default function TerrainLab() {
             `Voxel: ${P.voxelSize}m | Tile: ${P.tileSize}m | Res: ${P.resolution}²\n` +
             `Sample X: [${Math.round(P.sampleXMin)}, ${Math.round(P.sampleXMax)}]\n` +
             `Sample Y: [${Math.round(P.sampleYMin)}, ${Math.round(P.sampleYMax)}]\n` +
+            `Mesh: ${verts.toLocaleString()} verts | spacing ≈ ${spacing < 10 ? spacing.toFixed(2) : spacing.toFixed(1)} m/vert\n` +
             `Seed: ${P.seed} | Camera: ${P.fitCamera ? "Auto Fit" : "Fixed"} | 耗时 ${ms}ms`,
         });
       } catch (e) {
         setStatus({ error: true, ms: 0, text: "Error: " + (e instanceof Error ? e.message : String(e)) });
       } finally {
-        setBusy(false);
+        if (token === genTokenRef.current) {
+          setBusy(false);
+          setProgress(null);
+        }
       }
     }, 30);
   };
@@ -538,7 +564,16 @@ export default function TerrainLab() {
         <div className="hidden shrink-0 items-center gap-2 lg:flex">
           <Chip label="SEED" value={String(params.seed)} />
           <Chip label="RES" value={`${params.resolution}²`} />
-          <Chip label="GEN" value={status && !status.error ? `${status.ms}ms` : "—"} />
+          <Chip
+            label="GEN"
+            value={
+              busy && progress !== null
+                ? `${Math.round(progress * 100)}%`
+                : status && !status.error
+                  ? `${status.ms}ms`
+                  : "—"
+            }
+          />
           <span
             className={`ml-1 flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-[10px] ${
               busy ? "border-warn/50 text-warn" : "border-line text-mute"
@@ -639,14 +674,21 @@ export default function TerrainLab() {
                   onChange={(e) => set("resolution", parseInt(e.target.value, 10))}
                   className="w-full rounded-md border border-edge bg-ink px-2.5 py-1.5 font-mono text-[12px] text-paper outline-none focus:border-amber"
                 >
-                  {[128, 256, 384, 512].map((r) => (
-                    <option key={r} value={r}>{r}</option>
+                  {[128, 256, 384, 512, 768, 1024, 1536, 2048].map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                      {r >= 1024 ? " · slow" : ""}
+                    </option>
                   ))}
                 </select>
               </div>
               <Num label="Seed" value={params.seed} step={1} onChange={(v) => set("seed", v)} />
               <Num label="Max Mountain (m)" value={params.maxMountain} step={1} onChange={(v) => set("maxMountain", v)} />
             </div>
+            <p className="mt-2 border-l-2 border-warn/60 bg-ink/60 px-2.5 py-1.5 text-[10.5px] leading-relaxed text-mute">
+              地表网格顶点数 = Resolution²。世界越大，单顶点覆盖的地面越宽（见状态栏 m/vert），
+              细节就越粗糙——大世界请选更高分辨率（≥1024 构建较慢，可观察进度条）。
+            </p>
             <div className="mt-2">
               <Slider label="Vertical Scale" value={params.verticalScale} min={0.05} max={10} step={0.05} decimals={2} onChange={(v) => set("verticalScale", v)} />
               <Slider label="Frequency Scale" value={params.freqScale} min={0.02} max={20} step={0.02} decimals={2} onChange={(v) => set("freqScale", v)} />
@@ -672,12 +714,30 @@ export default function TerrainLab() {
                 自动更新
               </label>
             </div>
+            {busy && progress !== null && (
+              <div className="mt-2.5">
+                <div className="h-1.5 w-full overflow-hidden rounded-sm bg-edge/50">
+                  <div
+                    className="h-full rounded-sm bg-amber transition-[width] duration-100 ease-linear"
+                    style={{ width: `${Math.round(progress * 100)}%` }}
+                  />
+                </div>
+                <p className="mt-1 font-mono text-[10px] text-warn/80 tabular-nums">
+                  正在采样地表 {Math.round(progress * 100)}% ·{" "}
+                  {(params.resolution * params.resolution).toLocaleString()} 个采样点
+                </p>
+              </div>
+            )}
             <pre
               className={`mt-2.5 min-h-[96px] rounded-md border px-2.5 py-2 font-mono text-[10.5px] leading-relaxed whitespace-pre-wrap ${
                 status?.error ? "border-coral/60 bg-ink text-coral" : "border-line bg-ink text-warn"
               }`}
             >
-              {busy ? "Generating…" : status ? status.text : "等待首次生成…"}
+              {busy && progress !== null
+                ? `Generating… ${Math.round(progress * 100)}%`
+                : status
+                  ? status.text
+                  : "等待首次生成…"}
             </pre>
           </section>
         </aside>
@@ -693,8 +753,8 @@ export default function TerrainLab() {
               拖拽旋转 · 滚轮缩放 · 右键平移
             </div>
             {busy && (
-              <div className="absolute top-3 right-3 z-10 animate-pulse rounded bg-black/55 px-2.5 py-1 font-mono text-[11px] text-warn">
-                SAMPLING TERRAIN…
+              <div className="absolute top-3 right-3 z-10 animate-pulse rounded bg-black/55 px-2.5 py-1 font-mono text-[11px] text-warn tabular-nums">
+                SAMPLING TERRAIN… {progress !== null ? `${Math.round(progress * 100)}%` : ""}
               </div>
             )}
           </div>

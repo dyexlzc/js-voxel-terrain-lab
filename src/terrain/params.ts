@@ -100,7 +100,7 @@ export function clampParams(raw: TerrainParams): TerrainParams {
     sampleYMax,
     fitCamera: raw.fitCamera,
     showGrid: raw.showGrid,
-    resolution: clamp(Math.round(raw.resolution), 64, 768),
+    resolution: clamp(Math.round(raw.resolution), 64, 2048),
     seed: Math.round(raw.seed),
     verticalScale: clamp(raw.verticalScale, 0.05, 10),
     freqScale: clamp(raw.freqScale, 0.02, 20),
