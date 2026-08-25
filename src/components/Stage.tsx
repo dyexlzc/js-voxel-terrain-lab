@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { BURST_GLYPHS, GREETINGS, TICKER_TEXT } from "../data/greetings";
 import { useScramble } from "../hooks/useScramble";
+import Telemetry from "./Telemetry";
 
 interface Ripple {
   id: number;
@@ -23,7 +24,6 @@ export default function Stage({ onReplay }: { onReplay: () => void }) {
   const [taps, setTaps] = useState(0);
   const [ripples, setRipples] = useState<Ripple[]>([]);
   const [now, setNow] = useState(() => new Date());
-  const [bootTime] = useState(() => Date.now());
   const rootRef = useRef<HTMLDivElement>(null);
   const idRef = useRef(0);
 
@@ -79,9 +79,9 @@ export default function Stage({ onReplay }: { onReplay: () => void }) {
     el.classList.add("letter-pop");
   };
 
-  const uptime = Math.max(0, Math.floor((now.getTime() - bootTime) / 1000));
   const vw = Math.min(19, 132 / greeting.text.length);
   const timeStr = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  const dateStr = `${now.getMonth() + 1}/${pad(now.getDate())} 周${"日一二三四五六"[now.getDay()]}`;
 
   return (
     <div
@@ -123,9 +123,7 @@ export default function Stage({ onReplay }: { onReplay: () => void }) {
           </span>
         </div>
         <div className="flex items-baseline gap-3">
-          <span className="hidden font-mono text-[11px] tracking-widest text-mist sm:inline">
-            UP {pad(Math.floor(uptime / 60))}:{pad(uptime % 60)}
-          </span>
+          <span className="hidden font-mono text-[11px] tracking-widest text-mist sm:inline">{dateStr}</span>
           <span className="font-mono text-sm font-bold tracking-widest text-amber tabular-nums">{timeStr}</span>
         </div>
       </header>
@@ -166,18 +164,8 @@ export default function Stage({ onReplay }: { onReplay: () => void }) {
           )}
         </h1>
 
-        <div className="anim-rise flex items-center gap-4 font-mono text-xs text-mist" style={{ animationDelay: "0.35s" }}>
-          <span>
-            语言 <b className="text-aqua">{greeting.lang}</b>
-          </span>
-          <span className="h-3 w-px bg-line" />
-          <span>
-            第 <b className="text-amber">{sent}</b> 次问候
-          </span>
-          <span className="h-3 w-px bg-line" />
-          <span>
-            触碰 <b className="text-coral">{taps}</b>
-          </span>
+        <div className="anim-rise font-mono text-xs tracking-widest text-mist" style={{ animationDelay: "0.35s" }}>
+          语言 <b className="text-aqua">{greeting.lang}</b> · 点击屏幕任意位置试试
         </div>
 
         {/* 控制台 */}
@@ -211,6 +199,9 @@ export default function Stage({ onReplay }: { onReplay: () => void }) {
           npm run dev ▸ ws://localhost:5173 · streaming
         </div>
       </main>
+
+      {/* 实时号码观察台 */}
+      <Telemetry sent={sent} taps={taps} />
 
       {/* 底部问候跑马灯 */}
       <footer className="anim-rise relative z-10 border-t border-line/70 bg-ink/70 py-2.5 backdrop-blur-sm" style={{ animationDelay: "0.65s" }}>
