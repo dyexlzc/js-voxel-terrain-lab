@@ -762,10 +762,14 @@ export default function TerrainLab() {
             </div>
           </Group>
 
-          <Group n="5" title="山脉合成">
+          <Group
+            n="5"
+            title="山脉层级合成"
+            note="每个「山脉区域」内含一个主峰/主山脉（该区域最高），外围依次为次级山脉、山麓丘陵，区域之间融合为成片平原，大陆边缘过渡到深水海盆。峰值高度按区域随机分布，仅个别区域接近 Max Mountain。"
+          >
             <div className="grid grid-cols-2 gap-x-4">
-              <Slider label="Belts" value={params.belts} min={0.1} max={12} step={0.1} decimals={1} onChange={(v) => set("belts", v)} />
-              <Slider label="Belt Width" value={params.beltWidth} min={0.08} max={0.95} step={0.01} decimals={2} onChange={(v) => set("beltWidth", v)} />
+              <Slider label="区域尺寸 (m)" value={params.massifRegion} min={400} max={12000} step={100} decimals={0} onChange={(v) => set("massifRegion", v)} />
+              <Slider label="区域山峰密度" value={params.massifDensity} min={0.05} max={1} step={0.01} decimals={2} onChange={(v) => set("massifDensity", v)} />
               <Slider label="Warp" value={params.warp} min={0} max={6} step={0.05} decimals={2} onChange={(v) => set("warp", v)} />
               <Slider label="Mountain Erosion" value={params.mountainErosion} min={0} max={1.5} step={0.01} decimals={2} onChange={(v) => set("mountainErosion", v)} />
               <Slider label="River Strength" value={params.riverStrength} min={0} max={3} step={0.05} decimals={2} onChange={(v) => set("riverStrength", v)} />

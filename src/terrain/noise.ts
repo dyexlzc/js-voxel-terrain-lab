@@ -140,6 +140,57 @@ export class NoiseLib {
     const g1 = this.p[X + 1] & 1 ? x - 1 : -(x - 1);
     return this.lerp(this.fade(x), g0, g1) * 2;
   }
+
+  /**
+   * Worley F1 + 空间连续振幅场（山脉区域场核心）：
+   * 每个网格单元一个抖动特征点（= 一个"区域主峰"候选）。
+   * out[0] = F1：到最近特征点的距离（0~约1.1）；
+   * out[1] = 振幅（0~1）：邻域特征点哈希振幅的高斯核加权平均。
+   *
+   * 连续性要点（避免垂直断崖）：
+   * - 振幅不做 top-k 选择（最近/次近单元切换点会产生跳变），而是
+   *   对全部邻近特征点求和型加权 → 处处连续；
+   * - 5×5 搜索窗口保证 jitter=0.92 时 F1/F2 不因窗口移位而跳变；
+   * - 特征点包围盒预剔除远处单元，控制计算量。
+   */
+  worley2(x: number, y: number, out: Float32Array) {
+    const fx = Math.floor(x);
+    const fy = Math.floor(y);
+    let f1 = Infinity;
+    let ampSum = 0;
+    let wSum = 0;
+    const cut = 2.1 * 2.1;
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const cx = fx + dx;
+        const cy = fy + dy;
+        // 特征点包围盒 [cx+0.04, cx+0.96]² 的最近距离（jitter=0.92 → ±0.46）
+        const bx = x < cx + 0.04 ? cx + 0.04 : x > cx + 0.96 ? cx + 0.96 : x;
+        const by = y < cy + 0.04 ? cy + 0.04 : y > cy + 0.96 ? cy + 0.96 : y;
+        const bddx = x - bx;
+        const bddy = y - by;
+        if (bddx * bddx + bddy * bddy >= cut) continue;
+        const ix = cx & 255;
+        const iy = cy & 255;
+        const h1 = this.p[(this.p[ix] + iy) & 255] / 255;
+        const h2 = this.p[(this.p[(ix + 57) & 255] + iy) & 255] / 255;
+        const h3 = this.p[(this.p[(ix + 113) & 255] + iy) & 255] / 255;
+        const px = cx + 0.5 + (h1 - 0.5) * 0.92;
+        const py = cy + 0.5 + (h2 - 0.5) * 0.92;
+        const ddx = x - px;
+        const ddy = y - py;
+        const d2 = ddx * ddx + ddy * ddy;
+        const d = Math.sqrt(d2);
+        if (d < f1) f1 = d;
+        // 高斯核 σ≈0.35（1/(2σ²)≈4.08）：峰顶处本单元主导，单元边界平滑混合
+        const w = Math.exp(-d2 * 4.08);
+        ampSum += h3 * w;
+        wSum += w;
+      }
+    }
+    out[0] = f1;
+    out[1] = wSum > 0 ? ampSum / wSum : 0.5;
+  }
 }
 
 export function clamp(x: number, a: number, b: number) {

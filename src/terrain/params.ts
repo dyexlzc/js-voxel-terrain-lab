@@ -20,8 +20,10 @@ export interface TerrainParams {
   verticalScale: number;
   freqScale: number;
   maxMountain: number;
-  belts: number;
-  beltWidth: number;
+  /** 山脉区域尺寸（米）：每个该尺寸的区域拥有一个主峰/主山脉，向外依次为次级山脉、丘陵、平原 */
+  massifRegion: number;
+  /** 区域山峰密度（0~1）：多少比例的区域真正隆起为山脉，其余成为成片平原 */
+  massifDensity: number;
   warp: number;
   mountainErosion: number;
   riverStrength: number;
@@ -57,8 +59,8 @@ export const DEFAULT_PARAMS: TerrainParams = {
   verticalScale: 1,
   freqScale: 1,
   maxMountain: 720,
-  belts: 2.2,
-  beltWidth: 0.56,
+  massifRegion: 1600,
+  massifDensity: 0.72,
   warp: 1.25,
   mountainErosion: 0.95,
   riverStrength: 0.95,
@@ -113,8 +115,8 @@ export function clampParams(raw: TerrainParams): TerrainParams {
     verticalScale: clamp(raw.verticalScale, 0.05, 10),
     freqScale: clamp(raw.freqScale, 0.02, 20),
     maxMountain: clamp(raw.maxMountain, 1, 100000),
-    belts: clamp(raw.belts, 0.1, 12),
-    beltWidth: clamp(raw.beltWidth, 0.08, 0.95),
+    massifRegion: clamp(raw.massifRegion, 300, 50000),
+    massifDensity: clamp(raw.massifDensity, 0.05, 1),
     warp: clamp(raw.warp, 0, 6),
     mountainErosion: clamp(raw.mountainErosion, 0, 1.5),
     riverStrength: clamp(raw.riverStrength, 0, 3),
