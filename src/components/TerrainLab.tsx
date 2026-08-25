@@ -3,18 +3,45 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TerrainModel } from "../terrain/model";
 import { clamp } from "../terrain/noise";
-import { DEFAULT_PARAMS, clampParams, type TerrainParams } from "../terrain/params";
+import { DEFAULT_PARAMS, clampParams, effectiveResolution, type TerrainParams } from "../terrain/params";
+
+const RES_FIXED = [128, 256, 384, 512, 768, 1024, 1536];
 
 /* ---------------- 小型 UI 构件 ---------------- */
 
-function Group({ n, title, children, note }: { n: string; title: string; children: ReactNode; note?: string }) {
+function Group({
+  n,
+  title,
+  children,
+  note,
+  badge,
+}: {
+  n: string;
+  title: string;
+  children: ReactNode;
+  note?: string;
+  badge?: string;
+}) {
   return (
-    <section className="mb-3.5 rounded-lg border border-line bg-card p-3.5">
+    <section
+      className={`mb-3.5 rounded-lg border bg-card p-3.5 ${
+        badge ? "border-amber/50 shadow-[0_0_0_1px_rgba(255,180,84,0.12),0_6px_24px_-12px_rgba(255,180,84,0.35)]" : "border-line"
+      }`}
+    >
       <h3 className="mb-2.5 flex items-center gap-2 font-display text-[13px] font-semibold tracking-wide text-paper">
-        <span className="grid h-5 w-5 shrink-0 place-items-center rounded-sm bg-amber/15 font-mono text-[10px] font-bold text-amber">
+        <span
+          className={`grid h-5 w-5 shrink-0 place-items-center rounded-sm font-mono text-[10px] font-bold ${
+            badge ? "bg-amber text-ink" : "bg-amber/15 text-amber"
+          }`}
+        >
           {n}
         </span>
         {title}
+        {badge && (
+          <span className="ml-auto rounded-sm bg-amber/15 px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-widest text-amber">
+            {badge}
+          </span>
+        )}
       </h3>
       {note && (
         <p className="mb-2.5 border-l-2 border-amber/70 bg-ink/60 px-2.5 py-1.5 text-[11px] leading-relaxed text-mute">
@@ -160,14 +187,24 @@ export default function TerrainLab() {
 
   const autoMode = params.sampleMode === "auto";
 
+  /* 实时生效分辨率与密度（随参数即时联动） */
+  const effRes = effectiveResolution(clampParams(params));
+  const mPerVertex = Math.max(params.worldSizeX, params.worldSizeY) / effRes;
+  const isAutoRes = params.resolution === "auto";
+
   /* ---------- 构建函数 ---------- */
 
-  const buildSurface = async (P: TerrainParams, model: TerrainModel, token: number): Promise<boolean> => {
+  const buildSurface = async (
+    P: TerrainParams,
+    model: TerrainModel,
+    token: number,
+    onProgress: (p: number) => void
+  ): Promise<boolean> => {
     const scene = sceneRef.current;
     if (!scene) return false;
     const sizeX = P.worldSizeX;
     const sizeY = P.worldSizeY;
-    const res = P.resolution;
+    const res = effectiveResolution(P);
     const M = Math.max(1, model.M);
 
     const geo = new THREE.PlaneGeometry(sizeX, sizeY, res - 1, res - 1);
@@ -179,7 +216,18 @@ export default function TerrainLab() {
 
     const counts: Record<string, number> = { dune: 0, cliff: 0, ravine: 0, erosion: 0, iq: 0, plains: 0, ocean: 0 };
 
+    /* 分块：每 chunk 行让出一帧，避免高分辨率卡死主线程 */
+    const chunk = Math.max(8, Math.round(res / 48));
+
     for (let i = 0; i < res; i++) {
+      if (i > 0 && i % chunk === 0) {
+        if (token !== genTokenRef.current) {
+          geo.dispose();
+          return false;
+        }
+        onProgress(i / res);
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      }
       for (let j = 0; j < res; j++) {
         const idx = i * res + j;
         const lx = pos[idx * 3];
@@ -253,15 +301,6 @@ export default function TerrainLab() {
         colors[idx * 3] = r;
         colors[idx * 3 + 1] = g;
         colors[idx * 3 + 2] = b;
-      }
-      /* 每 8 行让出主线程并汇报进度；若已被更新的生成任务取代则放弃本次构建 */
-      if ((i & 7) === 0 || i === res - 1) {
-        if (token !== genTokenRef.current) {
-          geo.dispose();
-          return false;
-        }
-        setProgress((i + 1) / res);
-        await new Promise<void>((r) => window.setTimeout(r, 0));
       }
     }
 
@@ -419,25 +458,26 @@ export default function TerrainLab() {
         const t0 = performance.now();
         const P = clampParams(paramsRef.current);
         const model = new TerrainModel(P);
-        const ok = await buildSurface(P, model, token);
-        if (!ok) return; /* 已被更新的生成任务取代 */
+        /* 剖面 / 网格 / 相机先行（同步、快），再异步铺地表 */
         buildCrossSection(P, model);
         buildTileGrid(P, model);
         updateCameraForSize(P, model);
+        const ok = await buildSurface(P, model, token, (p) => setProgress(p));
+        if (!ok) return; /* 已被更新的生成任务取代 */
         const ms = Math.round(performance.now() - t0);
         const tilesX = Math.max(1, Math.round(P.worldSizeX / P.tileSize));
         const tilesY = Math.max(1, Math.round(P.worldSizeY / P.tileSize));
-        const verts = P.resolution * P.resolution;
-        const spacing = (P.sampleXMax - P.sampleXMin) / (P.resolution - 1);
+        const res = effectiveResolution(P);
+        const mpv = Math.max(P.worldSizeX, P.worldSizeY) / res;
         setStatus({
           error: false,
           ms,
           text:
             `World: ${P.worldSizeX}×${P.worldSizeY}m | Tiles: ${tilesX}×${tilesY}\n` +
-            `Voxel: ${P.voxelSize}m | Tile: ${P.tileSize}m | Res: ${P.resolution}²\n` +
+            `Res: ${res}²${P.resolution === "auto" ? " (Auto)" : ""} | Detail: ${mpv.toFixed(1)} m/vertex\n` +
+            `Voxel: ${P.voxelSize}m | Tile: ${P.tileSize}m\n` +
             `Sample X: [${Math.round(P.sampleXMin)}, ${Math.round(P.sampleXMax)}]\n` +
             `Sample Y: [${Math.round(P.sampleYMin)}, ${Math.round(P.sampleYMax)}]\n` +
-            `Mesh: ${verts.toLocaleString()} verts | spacing ≈ ${spacing < 10 ? spacing.toFixed(2) : spacing.toFixed(1)} m/vert\n` +
             `Seed: ${P.seed} | Camera: ${P.fitCamera ? "Auto Fit" : "Fixed"} | 耗时 ${ms}ms`,
         });
       } catch (e) {
@@ -554,16 +594,17 @@ export default function TerrainLab() {
           <div className="min-w-0">
             <h1 className="truncate font-display text-[16px] font-bold leading-tight tracking-wide">
               VoxelFree Terrain Lab <span className="text-amber">·</span>{" "}
-              <span className="text-[13px] font-semibold text-mute">Organic Biome Regions</span>
+              <span className="text-[13px] font-semibold text-mute">High-Res Organic Regions</span>
             </h1>
             <p className="truncate text-[11px] text-mute">
-              连续地形基底 + 低频噪声驱动的有机地貌区域 · Example 地形在自然形状区域内主导，无格子感
+              大尺度细节恢复：Auto 密度锁定 + 最高 1536 分辨率 + 异步分块生成
             </p>
           </div>
         </div>
         <div className="hidden shrink-0 items-center gap-2 lg:flex">
           <Chip label="SEED" value={String(params.seed)} />
-          <Chip label="RES" value={`${params.resolution}²`} />
+          <Chip label="RES" value={`${effRes}²${isAutoRes ? "·A" : ""}`} />
+          <Chip label="DENSITY" value={`${mPerVertex.toFixed(0)}m/v`} />
           <Chip
             label="GEN"
             value={
@@ -621,8 +662,75 @@ export default function TerrainLab() {
             </div>
           </Group>
 
+          <Group n="3" title="渲染精度" badge="关键">
+            <div className="mb-2.5">
+              <label className="mb-1 block text-[11px] text-mute">Resolution</label>
+              <select
+                value={isAutoRes ? "auto" : String(params.resolution)}
+                onChange={(e) =>
+                  set("resolution", e.target.value === "auto" ? "auto" : parseInt(e.target.value, 10))
+                }
+                className="w-full rounded-md border border-edge bg-ink px-2.5 py-1.5 font-mono text-[12px] text-paper outline-none focus:border-amber"
+              >
+                <option value="auto">Auto（密度锁定，推荐）</option>
+                {RES_FIXED.slice(0, -1).map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+                <option value={1536}>1536（极高，慢）</option>
+              </select>
+            </div>
+            <div className="mb-2.5">
+              <Num
+                label="Auto 目标 m/vertex（越小越精细）"
+                value={params.targetDensity}
+                step={1}
+                disabled={!isAutoRes}
+                onChange={(v) => set("targetDensity", v)}
+              />
+            </div>
+
+            {/* 实时密度面板 */}
+            <div className="mb-2.5 rounded-md border border-line bg-ink px-3 py-2.5">
+              <div className="flex items-baseline justify-between">
+                <span className="text-[11px] text-mute">当前顶点间距</span>
+                <span className="font-mono text-[15px] font-bold tabular-nums text-amber">
+                  {mPerVertex.toFixed(1)} <span className="text-[10px] font-normal text-mute">m/vertex</span>
+                </span>
+              </div>
+              <div className="mt-1.5 flex items-baseline justify-between font-mono text-[10px] text-mute">
+                <span>生效分辨率 <b className="text-paper">{effRes}²</b></span>
+                <span>{(effRes * effRes).toLocaleString()} verts</span>
+              </div>
+              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-edge/60">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${
+                    mPerVertex <= params.targetDensity * 1.15 ? "bg-ok" : mPerVertex <= params.targetDensity * 2.5 ? "bg-warn" : "bg-coral"
+                  }`}
+                  style={{
+                    width: `${clamp((params.targetDensity / mPerVertex) * 100, 6, 100)}%`,
+                  }}
+                />
+              </div>
+              <p className="mt-1 font-mono text-[9.5px] text-mute/80">
+                {mPerVertex <= params.targetDensity * 1.15
+                  ? "密度达标 · 细节充分"
+                  : mPerVertex <= params.targetDensity * 2.5
+                    ? "略低于目标 · 细节轻微损失"
+                    : "远超目标 · 大世界建议降低目标值或分块流式"}
+              </p>
+            </div>
+
+            <div className="border-l-2 border-ok/70 bg-ink/60 px-2.5 py-2 text-[10.5px] leading-relaxed text-mute">
+              <b className="text-paper">为什么大地图细节消失？</b>
+              <br />
+              顶点间距 = WorldSize / Resolution。6000@256 ≈ 23m/vertex；90000@256 ≈ 351m/vertex，小于间距的地貌被混叠抹掉。
+              <br />
+              <b className="text-ok">Auto 模式</b>按目标 m/vertex 自动提高分辨率（上限 1536）。90000m 想要 23m/vertex 需 ~3840²，超出单网格极限；那种尺度请用 chunk 流式 + LOD。
+            </div>
+          </Group>
+
           <Group
-            n="3"
+            n="4"
             title="有机地貌区域"
             note="使用低频连续噪声生成有机形状区域，每种 Example 地形在对应区域内主导。区域跨越多个 Tile，无格子感。"
           >
@@ -654,7 +762,7 @@ export default function TerrainLab() {
             </div>
           </Group>
 
-          <Group n="4" title="山脉合成">
+          <Group n="5" title="山脉合成">
             <div className="grid grid-cols-2 gap-x-4">
               <Slider label="Belts" value={params.belts} min={0.1} max={12} step={0.1} decimals={1} onChange={(v) => set("belts", v)} />
               <Slider label="Belt Width" value={params.beltWidth} min={0.08} max={0.95} step={0.01} decimals={2} onChange={(v) => set("beltWidth", v)} />
@@ -665,30 +773,11 @@ export default function TerrainLab() {
             </div>
           </Group>
 
-          <Group n="5" title="全局参数">
+          <Group n="6" title="全局参数">
             <div className="grid grid-cols-2 gap-2.5">
-              <div>
-                <label className="mb-1 block text-[11px] text-mute">Resolution</label>
-                <select
-                  value={params.resolution}
-                  onChange={(e) => set("resolution", parseInt(e.target.value, 10))}
-                  className="w-full rounded-md border border-edge bg-ink px-2.5 py-1.5 font-mono text-[12px] text-paper outline-none focus:border-amber"
-                >
-                  {[128, 256, 384, 512, 768, 1024, 1536, 2048].map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                      {r >= 1024 ? " · slow" : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
               <Num label="Seed" value={params.seed} step={1} onChange={(v) => set("seed", v)} />
               <Num label="Max Mountain (m)" value={params.maxMountain} step={1} onChange={(v) => set("maxMountain", v)} />
             </div>
-            <p className="mt-2 border-l-2 border-warn/60 bg-ink/60 px-2.5 py-1.5 text-[10.5px] leading-relaxed text-mute">
-              地表网格顶点数 = Resolution²。世界越大，单顶点覆盖的地面越宽（见状态栏 m/vert），
-              细节就越粗糙——大世界请选更高分辨率（≥1024 构建较慢，可观察进度条）。
-            </p>
             <div className="mt-2">
               <Slider label="Vertical Scale" value={params.verticalScale} min={0.05} max={10} step={0.05} decimals={2} onChange={(v) => set("verticalScale", v)} />
               <Slider label="Frequency Scale" value={params.freqScale} min={0.02} max={20} step={0.02} decimals={2} onChange={(v) => set("freqScale", v)} />
@@ -723,8 +812,8 @@ export default function TerrainLab() {
                   />
                 </div>
                 <p className="mt-1 font-mono text-[10px] text-warn/80 tabular-nums">
-                  正在采样地表 {Math.round(progress * 100)}% ·{" "}
-                  {(params.resolution * params.resolution).toLocaleString()} 个采样点
+                  正在分块采样地表 {Math.round(progress * 100)}% ·{" "}
+                  {(effRes * effRes).toLocaleString()} 个采样点
                 </p>
               </div>
             )}
@@ -734,7 +823,7 @@ export default function TerrainLab() {
               }`}
             >
               {busy && progress !== null
-                ? `Generating… ${Math.round(progress * 100)}%`
+                ? `Generating… Surface ${Math.round(progress * 100)}%`
                 : status
                   ? status.text
                   : "等待首次生成…"}
@@ -747,7 +836,7 @@ export default function TerrainLab() {
           <div ref={surfaceWrapRef} className="relative min-h-0 flex-[2] bg-[#7da7d0]">
             <canvas ref={threeCanvasRef} className="absolute inset-0 h-full w-full" />
             <div className="pointer-events-none absolute top-3 left-3 z-10 rounded bg-black/55 px-2.5 py-1 font-mono text-[11px] tracking-wider text-white">
-              3D SURFACE — ORGANIC BIOME REGIONS
+              3D SURFACE — HIGH-RES ORGANIC REGIONS
             </div>
             <div className="pointer-events-none absolute bottom-3 left-3 z-10 rounded bg-black/45 px-2.5 py-1 font-mono text-[10px] text-white/85">
               拖拽旋转 · 滚轮缩放 · 右键平移

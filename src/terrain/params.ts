@@ -12,7 +12,10 @@ export interface TerrainParams {
   sampleYMax: number;
   fitCamera: boolean;
   showGrid: boolean;
-  resolution: number;
+  /** "auto" = 密度锁定，按 targetDensity 推算；数字 = 固定分辨率 */
+  resolution: number | "auto";
+  /** Auto 模式目标：每顶点覆盖多少米（4–500） */
+  targetDensity: number;
   seed: number;
   verticalScale: number;
   freqScale: number;
@@ -33,6 +36,9 @@ export interface TerrainParams {
   sCave: number;
 }
 
+export const RES_AUTO_MIN = 128;
+export const RES_MAX = 1536;
+
 export const DEFAULT_PARAMS: TerrainParams = {
   worldSizeX: 6000,
   worldSizeY: 6000,
@@ -45,7 +51,8 @@ export const DEFAULT_PARAMS: TerrainParams = {
   sampleYMax: 3000,
   fitCamera: false,
   showGrid: false,
-  resolution: 256,
+  resolution: "auto",
+  targetDensity: 24,
   seed: 42,
   verticalScale: 1,
   freqScale: 1,
@@ -100,7 +107,8 @@ export function clampParams(raw: TerrainParams): TerrainParams {
     sampleYMax,
     fitCamera: raw.fitCamera,
     showGrid: raw.showGrid,
-    resolution: clamp(Math.round(raw.resolution), 64, 2048),
+    resolution: raw.resolution === "auto" ? "auto" : clamp(Math.round(raw.resolution), 64, RES_MAX),
+    targetDensity: clamp(Math.round(raw.targetDensity), 4, 500),
     seed: Math.round(raw.seed),
     verticalScale: clamp(raw.verticalScale, 0.05, 10),
     freqScale: clamp(raw.freqScale, 0.02, 20),
@@ -120,4 +128,13 @@ export function clampParams(raw: TerrainParams): TerrainParams {
     sIQ: clamp(raw.sIQ, 0, 3),
     sCave: clamp(raw.sCave, 0, 3),
   };
+}
+
+/** 解析生效分辨率：Auto 按目标 m/vertex 推算并封顶 1536² */
+export function effectiveResolution(p: TerrainParams): number {
+  if (p.resolution === "auto") {
+    const span = Math.max(p.sampleXMax - p.sampleXMin, p.sampleYMax - p.sampleYMin);
+    return clamp(Math.round(span / p.targetDensity), RES_AUTO_MIN, RES_MAX);
+  }
+  return clamp(Math.round(p.resolution), 64, RES_MAX);
 }
