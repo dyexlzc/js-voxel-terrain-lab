@@ -762,18 +762,38 @@ export default function TerrainLab() {
             </div>
           </Group>
 
-          <Group n="5" title="山脉合成">
+          <Group
+            n="5"
+            title="超级区块宏观骨架"
+            badge="NEW"
+            note="将地图划分为大尺度区块（alpine 高山 / hilly 丘陵 / plains 平原 / marine 海盆），每块内独立生成主峰+次级山峰+基底。区块间用双三次核柔和混合，无硬边界。主峰高度由 Supercell 决定，原有 Ridged/Belt 现在只作为表面纹理。"
+          >
             <div className="grid grid-cols-2 gap-x-4">
-              <Slider label="Belts" value={params.belts} min={0.1} max={12} step={0.1} decimals={1} onChange={(v) => set("belts", v)} />
+              <Slider label="Supercell 区块大小 (m)" value={params.supercellSize} min={400} max={8000} step={50} decimals={0} onChange={(v) => set("supercellSize", v)} />
+              <Slider label="Supercell 过渡柔和度" value={params.supercellBlend} min={0.05} max={1} step={0.01} decimals={2} onChange={(v) => set("supercellBlend", v)} />
+              <Slider label="主峰高度倍率" value={params.peakHeightMult} min={0.2} max={3} step={0.02} decimals={2} onChange={(v) => set("peakHeightMult", v)} />
+              <Slider label="主峰影响半径倍率" value={params.peakRadiusMult} min={0.1} max={2} step={0.02} decimals={2} onChange={(v) => set("peakRadiusMult", v)} />
+              <Slider label="次级山峰数量" value={params.secondaryPeakCount} min={0} max={20} step={1} decimals={0} onChange={(v) => set("secondaryPeakCount", Math.round(v))} />
+              <Slider label="次峰最高 / 主峰比" value={params.secondaryPeakMax} min={0.05} max={0.95} step={0.01} decimals={2} onChange={(v) => set("secondaryPeakMax", v)} />
+              <Slider label="平原区块概率" value={params.plainsBlockProb} min={0} max={0.85} step={0.01} decimals={2} onChange={(v) => set("plainsBlockProb", v)} />
+              <Slider label="水域区块概率" value={params.marineBlockProb} min={0} max={0.75} step={0.01} decimals={2} onChange={(v) => set("marineBlockProb", v)} />
+              <Slider label="海盆深度倍率" value={params.oceanDepthMult} min={0.05} max={2} step={0.02} decimals={2} onChange={(v) => set("oceanDepthMult", v)} />
+              <Slider label="平原微起伏倍率" value={params.plainsReliefMult} min={0} max={0.2} step={0.005} decimals={3} onChange={(v) => set("plainsReliefMult", v)} />
+            </div>
+          </Group>
+
+          <Group n="6" title="山脉纹理（细节层）" note="以下参数现在作为宏观骨架之上的微褶皱与质感，不再决定山峰的绝对高度与山脉范围。">
+            <div className="grid grid-cols-2 gap-x-4">
+              <Slider label="Belts 纹理密度" value={params.belts} min={0.1} max={12} step={0.1} decimals={1} onChange={(v) => set("belts", v)} />
               <Slider label="Belt Width" value={params.beltWidth} min={0.08} max={0.95} step={0.01} decimals={2} onChange={(v) => set("beltWidth", v)} />
-              <Slider label="Warp" value={params.warp} min={0} max={6} step={0.05} decimals={2} onChange={(v) => set("warp", v)} />
-              <Slider label="Mountain Erosion" value={params.mountainErosion} min={0} max={1.5} step={0.01} decimals={2} onChange={(v) => set("mountainErosion", v)} />
+              <Slider label="Warp 域扭曲" value={params.warp} min={0} max={6} step={0.05} decimals={2} onChange={(v) => set("warp", v)} />
+              <Slider label="Mountain Erosion 侵蚀感" value={params.mountainErosion} min={0} max={1.5} step={0.01} decimals={2} onChange={(v) => set("mountainErosion", v)} />
               <Slider label="River Strength" value={params.riverStrength} min={0} max={3} step={0.05} decimals={2} onChange={(v) => set("riverStrength", v)} />
               <Slider label="River Width" value={params.riverWidth} min={0} max={3} step={0.05} decimals={2} onChange={(v) => set("riverWidth", v)} />
             </div>
           </Group>
 
-          <Group n="6" title="全局参数">
+          <Group n="7" title="全局参数">
             <div className="grid grid-cols-2 gap-2.5">
               <Num label="Seed" value={params.seed} step={1} onChange={(v) => set("seed", v)} />
               <Num label="Max Mountain (m)" value={params.maxMountain} step={1} onChange={(v) => set("maxMountain", v)} />
