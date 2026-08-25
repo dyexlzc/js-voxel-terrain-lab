@@ -1,0 +1,105 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #0e1319;
+  --color-panel: #12181f;
+  --color-card: #161d25;
+  --color-line: #222c36;
+  --color-edge: #2a3540;
+  --color-paper: #dce4ea;
+  --color-mute: #8fa0b0;
+  --color-amber: #ffb454;
+  --color-warn: #ffd54f;
+  --color-ok: #67c587;
+  --color-coral: #ff7a6e;
+
+  --font-display: "Chakra Petch", "Noto Sans SC", sans-serif;
+  --font-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "Noto Sans SC", monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-ink);
+  color: var(--color-paper);
+  font-family: var(--font-body);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--color-amber);
+  color: var(--color-ink);
+}
+
+/* 面板滚动条 */
+.lab-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.lab-scroll::-webkit-scrollbar-thumb {
+  background: #2a3540;
+  border-radius: 8px;
+}
+.lab-scroll::-webkit-scrollbar-thumb:hover {
+  background: #3a4a5a;
+}
+.lab-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 数字输入微调 */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  opacity: 0.35;
+}
+
+/* 滑杆轨道细化 */
+input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 4px;
+  background: #2a3540;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -4px;
+  height: 12px;
+  width: 12px;
+  border-radius: 3px;
+  background: var(--color-amber);
+  border: 1px solid #0e1319;
+  box-shadow: 0 0 0 1px rgba(255, 180, 84, 0.35);
+  cursor: pointer;
+  transition: transform 0.12s ease;
+}
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 4px;
+  background: #2a3540;
+}
+input[type="range"]::-moz-range-thumb {
+  height: 12px;
+  width: 12px;
+  border-radius: 3px;
+  background: var(--color-amber);
+  border: 1px solid #0e1319;
+  cursor: pointer;
+}
+
+canvas {
+  display: block;
+}
