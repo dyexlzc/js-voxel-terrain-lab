@@ -169,10 +169,25 @@ export function cliffsHeight(n: VoxelNoise, x: number, y: number, z: number, fre
   const top = n.iq2(x, y, 0.01 * f, 15) * 25;
   return 50 * p + top * p;
 }
+/**
+ * Cliffs 最终地表高度（heightfield 语义）：取最高的 density 零交叉 = p 饱和到 1
+ * 处的「50 + top = 50 + 25·IQ2」。
+ *
+ * 对齐 HTML/ChatGPT 的 `cliffsSurfaceHeight`——它从高往低扫描、命中的是首个
+ * （最高）零交叉。由于自指密度 d = z - h(z) 在最高处 p 恒为 1，该最高面就是
+ * 50 + 25·iq2(0.01·f, 15)，与 sides / base 无关（它们只作用在更低的 z 段，被
+ * 更高的顶面覆盖）。直接闭式给出，等价于 HTML 的扫描结果但无量化伪影。
+ */
+export function cliffsTopHeight(n: VoxelNoise, x: number, y: number, freq: number): number {
+  return 50 + n.iq2(x, y, 0.01 * freq, 15) * 25;
+}
+
 export function cliffsDensity(n: VoxelNoise, x: number, y: number, z: number, freq: number): number {
-  // 标准 SDF 约定：z - h（z<h → d<0 → 实体，z>h → d>0 → 空气），
-  // 与 VoxelPlugin 一致；梯度 ∇d 主要沿 +Z，与"空气在上"的视觉一致。
-  return z - cliffsHeight(n, x, y, z, freq);
+  // 标准 heightfield SDF：z - h(x,y)，h 不依赖 z。
+  // 对齐 HTML/ChatGPT：Cliffs 渲染为单层 surface（50 + 25·IQ2）。
+  // 若沿用自指的 cliffsHeight（h 依赖 z），marching 会在 sides<0 的台地区额外
+  // 提取 z=0 底面与过渡带面，形成「顶部平面 + 底部散乱」而非干净的崖壁。
+  return z - cliffsTopHeight(n, x, y, freq);
 }
 
 /* ----- 2. VG_Example_Dunes（高度场 → 薄壳 SDF） -----
