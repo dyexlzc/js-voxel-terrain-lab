@@ -186,14 +186,14 @@ export default function CaveLab() {
         const x = -P.half + (2 * P.half * px) / (W - 1);
         let d: number;
         if (heights) {
-          // 高度场：density = heights - z  （列内线性插值）
+          // 高度场：density = z - heights（标准 SDF 约定：z<h → d<0 → 实体，z>h → d>0 → 空气）
           const t = ((x + P.half) / (2 * P.half)) * (nx - 1);
           const i = clamp(Math.round(t), 0, nx - 1);
-          d = heights[i] - z;
+          d = z - heights[i];
         } else {
           d = caveDensity(z, colAt!(x)!);
         }
-        // 发散配色：实体=暖岩色，空气=冷暗色，|d|<3 画等值线
+        // 发散配色：实体=暖岩色（d<0），空气=冷暗色（d>0），|d|<3 画等值线
         let r: number, g: number, b: number;
         const shade = clamp(0.35 + 0.65 * (Math.abs(d) / 150), 0, 1);
         if (d < 0) {
@@ -249,16 +249,17 @@ export default function CaveLab() {
         const geo = new THREE.BufferGeometry();
         geo.setAttribute("position", new THREE.BufferAttribute(res.positions, 3));
         geo.setAttribute("normal", new THREE.BufferAttribute(res.normals, 3));
-        // vertex color 走线性空间 → sRGB 输出；ramp 数值除以 255 归一化
-        // 并整体提亮（×1.2 上限 1.0），让薄壳表面（Cliffs）也能看清
+        // vertex color 走线性空间 → sRGB 输出；ramp 数值是按 sRGB 写出的 0~255，
+        // 必须先 sRGB→linear 再写入 BufferAttribute（否则 gamma 二次编码会让颜色发灰）。
+        // 整体再 ×1.15 提亮（上限 1.0），让薄壳表面（Cliffs）也能看清。
         const colors = new Float32Array(res.positions.length);
         for (let i = 0; i < res.vertices; i++) {
           const zVox = res.positions[i * 3 + 1]; // Three Y = Voxel Z（未缩放）
           const t = clamp((zVox - z0) / (z1 - z0 || 1), 0, 1);
           const c = heightColor(t);
-          colors[i * 3]     = Math.min(1, (c[0] / 255) * 1.2);
-          colors[i * 3 + 1] = Math.min(1, (c[1] / 255) * 1.2);
-          colors[i * 3 + 2] = Math.min(1, (c[2] / 255) * 1.2);
+          colors[i * 3]     = Math.min(1, srgbToLinear(c[0] / 255) * 1.15);
+          colors[i * 3 + 1] = Math.min(1, srgbToLinear(c[1] / 255) * 1.15);
+          colors[i * 3 + 2] = Math.min(1, srgbToLinear(c[2] / 255) * 1.15);
         }
         geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
         geo.setIndex(new THREE.BufferAttribute(res.indices, 1));
@@ -597,15 +598,21 @@ export default function CaveLab() {
   );
 }
 
-/** 高度着色 ramp（体素 Z 归一化 t → RGB） */
+/**
+ * 高度着色 ramp（体素 Z 归一化 t → RGB）。
+ * 与原 mountain_terrain_demo (2).html 的 colorH 对齐：深绿(植被)→橄榄→沙土
+ * → 灰岩 → 雪线。这样高程差异一目了然——低洼暗绿、高峰亮白。
+ * 注意：所有 RGB 数值按 sRGB 写出，写入 BufferAttribute 前必须 srgbToLinear。
+ */
 function heightColor(t: number): [number, number, number] {
   const stops: [number, [number, number, number]][] = [
-    [0.0, [42, 34, 28]],
-    [0.3, [104, 88, 72]],
-    [0.5, [124, 128, 79]],
-    [0.68, [160, 130, 91]],
-    [0.85, [150, 148, 145]],
-    [1.0, [245, 247, 250]],
+    [0.00, [34, 63, 44]],    // 深植被绿（低洼、河谷）
+    [0.18, [69, 104, 73]],   // 草坡绿
+    [0.38, [124, 128, 79]],  // 橄榄（低山）
+    [0.56, [160, 130, 91]],  // 沙土色（中山）
+    [0.72, [126, 112, 104]], // 灰岩（高山）
+    [0.86, [198, 201, 196]], // 浅灰岩（接近雪线）
+    [1.00, [250, 250, 250]], // 雪顶
   ];
   let i = 0;
   while (i < stops.length - 1 && t > stops[i + 1][0]) i++;
@@ -617,4 +624,13 @@ function heightColor(t: number): [number, number, number] {
     a[1][1] + (b[1][1] - a[1][1]) * u,
     a[1][2] + (b[1][2] - a[1][2]) * u,
   ];
+}
+
+/**
+ * sRGB → Linear 转换（Three.js BufferAttribute 颜色必须是线性空间，
+ * outputColorSpace=SRGBColorSpace 时渲染管线会自动做 sRGB 编码）。
+ * 标准 IEC 61966-2-1 公式（与 Three.Color.convertSRGBToLinear 一致）。
+ */
+function srgbToLinear(v: number): number {
+  return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
 }

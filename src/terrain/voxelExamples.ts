@@ -129,35 +129,57 @@ function smoothstep01(a: number, b: number, x: number): number {
  * A. VoxelExample 1~7 密度公式
  * ===================================================================== */
 
-/* ----- 1. VoxelExample_Cliffs（高度场 → 薄壳 SDF） -----
- * 原公式（height field）：
+/* ----- 1. VoxelExample_Cliffs（3D 自指型 SDF，依赖 query Z） -----
+ * 原公式（demo exampleHeight(name, x, y, zp, n)，zp=query Z）：
  *   base  = fbm2(X, Y, 0.005·f, 3) + offset/10
  *   sides = perlin2(X·0.1·f, Y·0.1·f, off=1)
- *   p     = clamp((Z/50 + 0.2·sides)·10, 0, 1)
+ *   p     = clamp((zp/50 + 0.2·sides)·10, 0, 1)
  *   top   = iq2(X, Y, 0.01·f, 15)·25
  *   h     = 50·p + lerp(0, top, p) + base·0.0
- * 包成 SDF：density = h(X,Y) - Z。
- * 解读：p 表示「该处垂直位置相对 50 单位台地高度的占据比」—— 底部 Z<-50 时
- * p=0（悬崖底），顶部 Z>+50 时 p=1（台面），二者之间为陡崖斜面（被 sides 偏移）。
- * SDF 语义：Z<h 实体（0~h 间填充），Z>h 空气。Z 范围 ≈ [-50, 100]。
+ *
+ * 关键设计：p 显式依赖查询 Z。这意味着 density = z - h(z, x, y) 是自指型 3D
+ * 场（z 既出现在左端又出现在 h 里），但不是 bug，是 cliffs 几何形状的本质：
+ *   - sides > 0.5 的「高台地」区域：p 恒 = 1，h = 50+top（z=50~75 的平台顶面）
+ *   - sides < 0 的「低台地」区域：低 z 时 p=0 → h=0（z=0 处的地平面）
+ *     随 z 升高，p 线性爬到 1，h 同步爬到 50+top → 形成 z=0 与 z=50+top 两个
+ *     等值面，中间填充实体 = 「崖体」
+ *   - 0<sides<0.5 的「崖壁过渡带」：p 在 z=50·(0.5-sides) 处变 1，这一区段
+ *     看不到 d=0 等值面（全程 solid），相邻 (x,y) 的高低平台通过崖壁连接
+ *
+ * 因此 marching tetrahedra 在 cliffs 区域会找到 2 个零交叉（z=0 和 z=50+top），
+ * 低台地区域在 z=0 与 z=50+top 之间全部是 solid 实体——这就是「悬崖」的来源。
+ * 几何上类似 1D 阶梯函数 lifted 到 3D：d=0 等值面 = 阶梯顶面 + 阶梯侧面。
+ *
+ * 历史误会（已澄清）：之前误判「原版 zp=0 固定，把查询 z 代入是 bug」，
+ * 实际上原 demo exampleHeight(name, x, y, zp, n) 的 zp 就是查询 z，
+ * 3D 自指是 cliffs 算法本身的设计，不是错误。把 zp 锁死成 0 会把 cliffs
+ * 退化成 2D 高度场（只有 z=0 与 z=50+top 之间的二选一 surface），失去崖壁。
+ *
+ * 符号约定：d = z - h（z<h → d<0 → 实体，z>h → d>0 → 空气），与 VoxelPlugin
+ * 一致；∇d 主要沿 +Z，与"空气在上"的视觉一致。
+ *
+ * Z 范围 [-15, 90]：下 15 单位空气（z=0 低台地顶面之下无意义），上 5 单位
+ * 空气（z=70 顶面之上需要空气层），主表面 z∈[0, 75]。
  */
 export function cliffsHeight(n: VoxelNoise, x: number, y: number, z: number, freq: number): number {
   const f = freq;
-  const base = n.fbm2(x, y, 0.005 * f, 3);
   const sides = n.perlin2(x * 0.1 * f, y * 0.1 * f, 1) as number;
+  // 关键：zp = query z（demo 原版即如此，p 显式依赖 z 才是 cliffs 算法的设计）
   const p = clamp((z / 50 + 0.2 * sides) * 10, 0, 1);
   const top = n.iq2(x, y, 0.01 * f, 15) * 25;
-  return 50 * p + (1 - p) * 0 + p * top + base * 0.0;
+  return 50 * p + top * p;
 }
 export function cliffsDensity(n: VoxelNoise, x: number, y: number, z: number, freq: number): number {
-  return cliffsHeight(n, x, y, z, freq) - z;
+  // 标准 SDF 约定：z - h（z<h → d<0 → 实体，z>h → d>0 → 空气），
+  // 与 VoxelPlugin 一致；梯度 ∇d 主要沿 +Z，与"空气在上"的视觉一致。
+  return z - cliffsHeight(n, x, y, z, freq);
 }
 
 /* ----- 2. VG_Example_Dunes（高度场 → 薄壳 SDF） -----
  * 原公式：
  *   phase = fbm2(X, Y, 0.001·f, 3) + 0.002·(X·dx + Y·dy)·f
  *   h     = -75·|sin(π·phase)|   (范围 [-75, 0])
- * 包成 SDF：density = h - Z；Z 范围 ≈ [-200, 50] 才能完整看到沙丘波。
+ * 包成 SDF：d = z - h（z<h → 实体）；Z 范围 ≈ [-200, 50] 才能完整看到沙丘波。
  */
 export interface DunesParams {
   windX: number;
@@ -171,7 +193,8 @@ export function dunesHeight(n: VoxelNoise, x: number, y: number, freq: number, P
   return -75 * Math.abs(Math.sin(Math.PI * phase));
 }
 export function dunesDensity(n: VoxelNoise, x: number, y: number, z: number, freq: number, P: DunesParams = DEFAULT_DUNES_PARAMS): number {
-  return dunesHeight(n, x, y, freq, P) - z;
+  // 标准 SDF 约定：z - h（z<h → d<0 → 实体，z>h → d>0 → 空气）
+  return z - dunesHeight(n, x, y, freq, P);
 }
 
 /* ----- 3. VoxelExample_Cave（体 SDF，原版） ----- */
@@ -211,7 +234,7 @@ export function ravinesDensity(n: VoxelNoise, x: number, y: number, z: number, f
  *   w = smoothstep(-0.5, 0, q[0])
  *   e = erosionNoise(X, Y, 0.02·f, 5)         (5x5 murmur 流向核)
  *   h = 500·(q[0] + 0.008·e·w)
- * Z 范围 ≈ [-150, 700]。
+ * 包成 SDF：d = z - h；Z 范围 ≈ [-150, 700]。
  */
 export function erosionHeight(n: VoxelNoise, x: number, y: number, freq: number, seed: number): number {
   const q = n.fbm2d(x, y, 0.001 * freq, 3);
@@ -220,31 +243,34 @@ export function erosionHeight(n: VoxelNoise, x: number, y: number, freq: number,
   return 500 * (q[0] + 0.008 * e * w);
 }
 export function erosionDensity(n: VoxelNoise, x: number, y: number, z: number, freq: number, seed: number): number {
-  return erosionHeight(n, x, y, freq, seed) - z;
+  // 标准 SDF 约定：z - h
+  return z - erosionHeight(n, x, y, freq, seed);
 }
 
 /* ----- 6. VG_Example_MultiIndex（高度场 → 薄壳 SDF） -----
  * 原公式：h = 300·fbm2(X, Y, 0.002·f, 7)   (oct=7，含 FBM FractalBounding)
  * 最简单的体素化 FBM；用 7 个 octave 形成 8 阶分形。
- * Z 范围 ≈ [-400, 400]。
+ * 包成 SDF：d = z - h；Z 范围 ≈ [-400, 400]。
  */
 export function multiHeight(n: VoxelNoise, x: number, y: number, freq: number): number {
   return 300 * n.fbm2(x, y, 0.002 * freq, 7);
 }
 export function multiDensity(n: VoxelNoise, x: number, y: number, z: number, freq: number): number {
-  return multiHeight(n, x, y, freq) - z;
+  // 标准 SDF 约定：z - h
+  return z - multiHeight(n, x, y, freq);
 }
 
 /* ----- 7. VoxelExample_IQNoise（高度场 → 薄壳 SDF） -----
  * 原公式：h = 500·iq2(X, Y, 0.001·f, 15)   (15 octave IQ 域旋转)
  * 高频 IQ 噪声主导——棱角山脉（与 VoxelExample_Cliffs 不同的是无台地过渡）。
- * Z 范围 ≈ [-600, 600]。
+ * 包成 SDF：d = z - h；Z 范围 ≈ [-600, 600]。
  */
 export function iqHeight(n: VoxelNoise, x: number, y: number, freq: number): number {
   return 500 * n.iq2(x, y, 0.001 * freq, 15);
 }
 export function iqDensity(n: VoxelNoise, x: number, y: number, z: number, freq: number): number {
-  return iqHeight(n, x, y, freq) - z;
+  // 标准 SDF 约定：z - h
+  return z - iqHeight(n, x, y, freq);
 }
 
 /* =====================================================================
@@ -257,7 +283,10 @@ export function iqDensity(n: VoxelNoise, x: number, y: number, z: number, freq: 
 
 /* ----- Hybrid 1: Dunes-on-Cliffs（沙丘骑在台地上） -----
  * cliffsHeight 提供主体高度（台地），dunesHeight 在 cliffMask 之外的区域叠加
- * 沙丘。SInter(cliffsD, dunesD, 30) 让台地边缘到沙丘的过渡变缓（k=30 单位）。
+ * 沙丘。SInter(dC, dD, 30) 让台地边缘到沙丘的过渡变缓（k=30 单位）。
+ *
+ * 关键：SDF = z - h（实体 z < h）。SInter = max 语义 = 两边都实才实。
+ * 注意：cliffsHeight 是 3D 自指型（依赖 query z），dunesHeight 是 2D 高度场。
  */
 export function dunesOnCliffsDensity(
   n: VoxelNoise,
@@ -268,8 +297,8 @@ export function dunesOnCliffsDensity(
 ): number {
   const hC = cliffsHeight(n, x, y, z, freq);
   const hD = dunesHeight(n, x, y, freq, dunes);
-  const dC = hC - z;
-  const dD = hD - z;
+  const dC = z - hC;
+  const dD = z - hD;
   return smoothIntersection(dC, dD, 30);
 }
 
@@ -277,6 +306,7 @@ export function dunesOnCliffsDensity(
  * cliffsHeight 给出台地主体，iqHeight 提供高分辨率细节（500·iq2）。
  * max(dC, dI)：要求两者都为实体（Z 在两者之下）才算实体——台地的空气区不
  * 会因为 IQ 噪声的高点而多出一块「空中浮岛」。
+ * 注意：cliffsHeight 依赖 query z，传入真实 z 保持 3D 自指结构。
  */
 export function cliffsPlusIQDensity(
   n: VoxelNoise,
@@ -285,7 +315,7 @@ export function cliffsPlusIQDensity(
 ): number {
   const hC = cliffsHeight(n, x, y, z, freq);
   const hI = iqHeight(n, x, y, freq);
-  return Math.max(hC - z, hI - z);
+  return Math.max(z - hC, z - hI);
 }
 
 /* ----- Hybrid 3: Ravine+Erosion（峡谷与侵蚀在同一噪声上双雕） -----
@@ -306,7 +336,8 @@ export function ravinePlusErosionDensity(
   // Erosion：在 fbm2 高频处微削
   const eN = n.fbm2(x * 0.016 * freq, y * 0.016 * freq, 1, 5);
   const hFinal = hAfterRav - 20 * (eN * 0.5 + 0.5);
-  return hFinal - z;
+  // 标准 SDF 约定：z - h
+  return z - hFinal;
 }
 
 /* ----- Hybrid 4: Erosion+Multi（侵蚀噪声与多频 FBM 相加） -----
@@ -320,7 +351,7 @@ export function erosionPlusMultiDensity(
 ): number {
   const hM = multiHeight(n, x, y, freq);
   const hE = erosionHeight(n, x, y, freq, seed);
-  return smoothUnion(hM - z, hE - z, 40);
+  return smoothUnion(z - hM, z - hE, 40);
 }
 
 /* ----- Hybrid 5: IQ+Ravine（IQ 山脊 + 峡谷切割） -----
@@ -335,7 +366,8 @@ export function iqPlusRavineDensity(
   const ravN = 1 - Math.abs(n.perlin2(x * 0.008 * freq, y * 0.008 * freq) as number);
   const ravCarve = Math.pow(smoothstep01(0.68, 0.94, ravN), 2) * 200;
   const hFinal = Math.max(hI - ravCarve, -200);
-  return hFinal - z;
+  // 标准 SDF 约定：z - h
+  return z - hFinal;
 }
 
 /* ----- Hybrid 6: 区域驱动混合（5 区域 × 5 算子 = 全域合成） -----
@@ -350,7 +382,7 @@ export function iqPlusRavineDensity(
  *   hD (ero)  = erosionHeight            // 区域 D 侵蚀
  *   hE (iq)   = iqHeight                 // 区域 E IQ 山脊
  *
- * 每个区域的 density：d_i = max(h_i - z, -very_low)   防止下挖
+ * 每个区域的 density：d_i = z - h_i  （z < h → d < 0 → 实体；z > h → d > 0 → 空气）
  * 最终 density：SUnion(SUnion(SUnion(dA, dB, k=20), SUnion(dC, dD, k=20), k=20), dE, k=20)
  * 其中 k=20 让区域边界 20 单位宽的过渡带，避免硬边锯齿。
  */
@@ -366,6 +398,7 @@ export function regionDrivenDensity(
   // 主体高度（背景）：多频 FBM 避免单一算子大区主导
   const hBack = multiHeight(n, x, y, freq) * 0.35;
   // 各区域算子的「增强高度」（只在区域掩码 > 0 时才有意义）
+  // 注意：cliffsHeight 依赖 query z（3D 自指型），传入 z 保持原算法
   const hCliff = cliffsHeight(n, x, y, z, freq);
   const hDune = dunesHeight(n, x, y, freq, dunes);
   const hEro = erosionHeight(n, x, y, freq, seed);
@@ -375,12 +408,12 @@ export function regionDrivenDensity(
   const ravCarve = Math.pow(smoothstep01(0.68, 0.94, ravN), 2) * 120;
   const hBackRav = hBack - ravCarve;
 
-  // 区域密度：算子贡献 = mask·(h - z)，背景永远存在
-  const dBack = hBackRav - z;
-  const dCliff = smoothUnion(dBack, hCliff - z, 20) * (1 - r.cliffMask) + (hCliff - z) * r.cliffMask;
-  const dDune = smoothUnion(dBack, hDune - z, 15) * (1 - r.duneMask) + (hDune - z) * r.duneMask;
-  const dEro = smoothUnion(dBack, hEro - z, 25) * (1 - r.eroMask) + (hEro - z) * r.eroMask;
-  const dIq = smoothUnion(dBack, hIq - z, 30) * (1 - r.iqMask) + (hIq - z) * r.iqMask;
+  // 区域密度：算子贡献 = mask·(z - h)，背景永远存在
+  const dBack = z - hBackRav;
+  const dCliff = smoothUnion(dBack, z - hCliff, 20) * (1 - r.cliffMask) + (z - hCliff) * r.cliffMask;
+  const dDune = smoothUnion(dBack, z - hDune, 15) * (1 - r.duneMask) + (z - hDune) * r.duneMask;
+  const dEro = smoothUnion(dBack, z - hEro, 25) * (1 - r.eroMask) + (z - hEro) * r.eroMask;
+  const dIq = smoothUnion(dBack, z - hIq, 30) * (1 - r.iqMask) + (z - hIq) * r.iqMask;
   // 4 算子 SUnion
   const dA = smoothUnion(dCliff, dDune, 25);
   const dB = smoothUnion(dEro, dIq, 25);
@@ -429,75 +462,75 @@ export interface ModeSpec {
 export const MODE_SPECS: ModeSpec[] = [
   {
     id: "cliffs", n: 1, short: "Cliffs", title: "1 · VoxelExample_Cliffs（台地悬崖）",
-    zRange: [-30, 110], isVolumetric: false,
+    zRange: [-15, 90], isVolumetric: false,
     formula:
-      `base  = FBM2(X, Y, 0.005·f, 3)\nsides = Perlin2(X·0.1·f, Y·0.1·f, off=1)\np     = clamp((Z/50 + 0.2·sides)·10, 0, 1)\ntop   = IQ2(X, Y, 0.01·f, 15)·25\nh     = 50·p + lerp(0, top, p)\nvalue = h - Z  (薄壳 SDF)`,
+      `sides = Perlin2(X·0.1·f, Y·0.1·f, off=1)\np     = clamp((Z/50 + 0.2·sides)·10, 0, 1)  ← 显式依赖 Z\ntop   = IQ2(X, Y, 0.01·f, 15)·25\nh     = p·(50 + top)                (h 依赖 Z：3D 自指型 SDF)\nvalue = Z - h  (Z<h 为实体)\n· sides > 0.5: p≡1，h≡50+top，平台顶面 z=50+top\n· sides < 0:   p=z/5+2sides 线性，0→1 在 z∈[-10sides, 50-10sides]\n  形成 z=0 与 z=50+top 两个等值面 + 中间实体（=崖体）\n· 0<sides<0.5: 过渡区，p 在 z=50(0.5-sides) 处封 1，全程 solid\nmarching 找到 2 个零交叉 = 阶梯顶面 + 阶梯侧面（=崖壁）`,
   },
   {
     id: "dunes", n: 2, short: "Dunes", title: "2 · VG_Example_Dunes（沙丘）",
     zRange: [-180, 40], isVolumetric: false, needsDunes: true,
     formula:
-      `phase = FBM2(X, Y, 0.001·f, 3) + 0.002·(X·dx + Y·dy)·f\nh     = -75·|sin(π·phase)|\nvalue = h - Z  (薄壳 SDF)\n风向 (dx, dy) 决定沙丘脊线方向`,
+      `phase = FBM2(X, Y, 0.001·f, 3) + 0.002·(X·dx + Y·dy)·f\nh     = -75·|sin(π·phase)|\nvalue = Z - h  (薄壳 SDF，Z<h 为实体)\n风向 (dx, dy) 决定沙丘脊线方向`,
   },
   {
     id: "cave", n: 3, short: "Cave", title: "3 · VoxelExample_Cave（洞穴）",
     zRange: [-320, 520], isVolumetric: true,
     formula:
-      `top    = FBM2(X, Y, 0.005·f, 3)·150\nbot    = FBM2(X+391, Y-71, 0.008·f, 3)·150\ntube   = 400 - |XY|\nband   = SUnion(top-Z, Z-bot, 25) + 50\nglobal = IQ2(X, Y, 0.005·f, 15)·200 + 150\nvalue  = SInter(Z-global, SUnion(tube, band, 100), 15)`,
+      `top    = FBM2(X, Y, 0.005·f, 3)·150\nbot    = FBM2(X+391, Y-71, 0.008·f, 3)·150\ntube   = 400 - |XY|\nband   = SUnion(top-Z, Z-bot, 25) + 50\nglobal = IQ2(X, Y, 0.005·f, 15)·200 + 150\nvalue  = SInter(Z-global, SUnion(tube, band, 100), 15)\n体内 d>0 = 空气（洞穴空腔），d<0 = 实体（岩石）`,
   },
   {
     id: "ravines", n: 4, short: "Ravines", title: "4 · VoxelExample_Ravines（峡谷）",
     zRange: [-120, 80], isVolumetric: true,
     formula:
-      `f    = 0.02·f\np    = Perlin3(X·f, Y·f, Z·f, oct=1)\ntop  = SInter(Z, 5·p, 5)\nvalue = SUnion(Z+50, top, 5)`,
+      `f    = 0.02·f\np    = Perlin3(X·f, Y·f, Z·f, oct=1)\ntop  = SInter(Z, 5·p, 5)\nvalue = SUnion(Z+50, top, 5)\n体内 d>0 = 空气（峡谷开口），d<0 = 实体（岩壁）`,
   },
   {
     id: "erosion", n: 5, short: "Erosion", title: "5 · VG_Example_Erosion（侵蚀）",
     zRange: [-180, 700], isVolumetric: false, needsSeed: true,
     formula:
-      `q = FBM2D(X, Y, 0.001·f, 3)            (val + ∇)\nw = smoothstep(-0.5, 0, q[0])\ne = ErosionNoise(X, Y, 0.02·f, 5)        (5×5 流向核)\nh = 500·(q[0] + 0.008·e·w)\nvalue = h - Z  (薄壳 SDF)`,
+      `q = FBM2D(X, Y, 0.001·f, 3)            (val + ∇)\nw = smoothstep(-0.5, 0, q[0])\ne = ErosionNoise(X, Y, 0.02·f, 5)        (5×5 流向核)\nh = 500·(q[0] + 0.008·e·w)\nvalue = Z - h  (薄壳 SDF，Z<h 为实体)`,
   },
   {
     id: "multi", n: 6, short: "Multi", title: "6 · VG_Example_MultiIndex（多频 FBM）",
     zRange: [-400, 400], isVolumetric: false,
     formula:
-      `h = 300·FBM2(X, Y, 0.002·f, 7)        (7 oct FBM)\nvalue = h - Z  (薄壳 SDF)`,
+      `h = 300·FBM2(X, Y, 0.002·f, 7)        (7 oct FBM)\nvalue = Z - h  (薄壳 SDF，Z<h 为实体)`,
   },
   {
     id: "iq", n: 7, short: "IQ", title: "7 · VoxelExample_IQNoise（IQ 域旋转）",
     zRange: [-650, 650], isVolumetric: false,
     formula:
-      `h = 500·IQ2(X, Y, 0.001·f, 15)        (15 oct, 40° 域旋转)\nvalue = h - Z  (薄壳 SDF)`,
+      `h = 500·IQ2(X, Y, 0.001·f, 15)        (15 oct, 40° 域旋转)\nvalue = Z - h  (薄壳 SDF，Z<h 为实体)`,
   },
   {
     id: "dunes_on_cliffs", n: 8, short: "Dunes∩Cliffs", title: "8 · Hybrid · Dunes-on-Cliffs（台地+沙丘）",
     zRange: [-180, 130], isVolumetric: false, needsDunes: true,
     formula:
-      `dC = cliffsHeight(X, Y, Z) - Z\ndD = dunesHeight(X, Y) - Z\nvalue = SInter(dC, dD, 30)\n台地 + 沙丘 SInter：只在两者都实的地方为实，\n边界 k=30 平滑过渡`,
+      `dC = Z - cliffsHeight(X, Y)\ndD = Z - dunesHeight(X, Y)\nvalue = SInter(dC, dD, 30)\n台地 + 沙丘 SInter：只在两者都实的地方为实，\n边界 k=30 平滑过渡`,
   },
   {
     id: "cliffs_plus_iq", n: 9, short: "Cliffs∪IQ", title: "9 · Hybrid · Cliffs+IQ（台地+IQ 锯齿）",
     zRange: [-650, 650], isVolumetric: false,
     formula:
-      `dC = cliffsHeight(X, Y, Z) - Z\ndI = iqHeight(X, Y) - Z\nvalue = max(dC, dI)  (Intersection)\n台地主体 + IQ 噪声山脊交集\n= 两者都实才算实，IQ 高点不会成为空中浮岛`,
+      `dC = Z - cliffsHeight(X, Y)\ndI = Z - iqHeight(X, Y)\nvalue = max(dC, dI)  (Intersection)\n台地主体 + IQ 噪声山脊交集\n= 两者都实才算实，IQ 高点不会成为空中浮岛`,
   },
   {
     id: "ravine_plus_erosion", n: 10, short: "Rav∩Ero", title: "10 · Hybrid · Ravine+Erosion（峡谷+侵蚀）",
     zRange: [-400, 400], isVolumetric: false, needsSeed: true,
     formula:
-      `hM = multiHeight(X, Y)                 (Multi 基线)\nrav = pow(smoothstep(0.68, 0.94, |perlin|), 2)·100\nh   = hM - rav - 20·fbm2(X·0.016·f, Y·0.016·f, 5)\nvalue = h - Z  (薄壳 SDF)`,
+      `hM = multiHeight(X, Y)                 (Multi 基线)\nrav = pow(smoothstep(0.68, 0.94, |perlin|), 2)·100\nh   = hM - rav - 20·fbm2(X·0.016·f, Y·0.016·f, 5)\nvalue = Z - h  (薄壳 SDF，Z<h 为实体)`,
   },
   {
     id: "erosion_plus_multi", n: 11, short: "Ero∪Multi", title: "11 · Hybrid · Erosion+Multi（侵蚀+多频）",
     zRange: [-400, 700], isVolumetric: false, needsSeed: true,
     formula:
-      `hM = multiHeight(X, Y)\nhE = erosionHeight(X, Y, seed)\nvalue = SUnion(hM - Z, hE - Z, 40)\n两高度场 SUnion：选较高者，k=40 平滑过渡`,
+      `hM = multiHeight(X, Y)\nhE = erosionHeight(X, Y, seed)\nvalue = SUnion(Z - hM, Z - hE, 40)\n两高度场 SUnion：选较高者，k=40 平滑过渡`,
   },
   {
     id: "iq_plus_ravine", n: 12, short: "IQ∩Ravine", title: "12 · Hybrid · IQ+Ravine（IQ 山脊+峡谷）",
     zRange: [-650, 650], isVolumetric: false,
     formula:
-      `hI = iqHeight(X, Y)\nrav = pow(smoothstep(0.68, 0.94, |perlin|), 2)·200\nh   = max(hI - rav, -200)\nvalue = h - Z  (薄壳 SDF)\nIQ 主导山脊，ravine 在高值处下切`,
+      `hI = iqHeight(X, Y)\nrav = pow(smoothstep(0.68, 0.94, |perlin|), 2)·200\nh   = max(hI - rav, -200)\nvalue = Z - h  (薄壳 SDF，Z<h 为实体)\nIQ 主导山脊，ravine 在高值处下切`,
   },
   {
     id: "region_driven", n: 13, short: "RegionDriven", title: "13 · Hybrid · RegionDriven（5 区域合成）",
