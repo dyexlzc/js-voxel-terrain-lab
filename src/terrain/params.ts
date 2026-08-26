@@ -20,8 +20,50 @@ export interface TerrainParams {
   verticalScale: number;
   freqScale: number;
   maxMountain: number;
-  belts: number;
-  beltWidth: number;
+  /** 山脉区域尺寸（米）：每个该尺寸的区域拥有一个主峰/主山脉，向外依次为次级山脉、丘陵、平原 */
+  massifRegion: number;
+  /** 区域山峰密度（0~1）：多少比例的区域真正隆起为山脉，其余成为成片平原 */
+  massifDensity: number;
+  /**
+   * 平原化强度（0~1）：强侵蚀气候带内，地形起伏向平原基底压缩的比例。
+   * 0 = 不压缩（起伏保留），1 = 最大压缩（90% 起伏被移除）。Minecraft 1.18
+   * 的 erosion 参数等价物，作用于大尺度气候带而非单个山脉区域。
+   */
+  plainStrength: number;
+  /**
+   * 高原强度（0~1）：中等侵蚀气候带内，山体/平原被抬升并削平为台地的比例。
+   * 0 = 无高原，1 = 高原带内完全台地化（内部绝对平坦，仅边缘有阶梯）。
+   */
+  plateauStrength: number;
+  /**
+   * 高原抬升（相对 Max Mountain，0~0.4）：高原面相对平原基底的平均抬升量。
+   * 高原面高程 = M × (0.05 + plateauLift × [0.55, 1.05] 区域随机)，
+   * 例：M=720、lift=0.15 → 高原面约 95~120m。
+   */
+  plateauLift: number;
+  /**
+   * 超大湖区域尺寸（米）：世界按此尺寸划分湖泊区域（Worley cell），
+   * 每个区域最多生成一个「内陆海」级大湖，湖面直径约为区域尺寸的 0.5~0.9 倍。
+   * 尺度换算（UE5 调参参考）：
+   *   2600m 区域 → 湖面约 1.3~2.3km（chunk=16m 时 ≈ 80~140 chunk 横跨；
+   *   chunk=100m 时 ≈ 13~23 chunk）
+   *   想要 10×10~30×30 chunk（16m/chunk → 160~480m）的中型湖 → 调到 500~800m
+   * 相邻两个湖泊区域同时成湖时盆地会合并，形成更大的连体湖。
+   */
+  lakeRegion: number;
+  /**
+   * 大湖出现频率（0~1）：湖泊区域中真正成湖的比例，其余区域完全无湖。
+   * 0.25 → 6km 地图期望 1~2 个大湖（低频、稀缺的「内陆海」）；
+   * 0 = 全图无湖。UE5 移植：Worley cell hash 与该阈值做 smoothstep 门控。
+   */
+  lakeDensity: number;
+  /**
+   * 大湖深度（相对 Max Mountain，0~0.5）：湖心最大开挖水深 ≈ M × lakeDepth。
+   * 深度曲线 pow(basin,1.35)：湖心最深、湖滨渐浅（浅滩→深水），M=720、
+   * depth=0.22 → 湖心约 -158m。注意湖内高地形按「保岛下沉」处理，
+   * 山地湖会形成峡湾与岛屿而非整体淹没。
+   */
+  lakeDepth: number;
   warp: number;
   mountainErosion: number;
   riverStrength: number;
@@ -57,8 +99,14 @@ export const DEFAULT_PARAMS: TerrainParams = {
   verticalScale: 1,
   freqScale: 1,
   maxMountain: 720,
-  belts: 2.2,
-  beltWidth: 0.56,
+  massifRegion: 1600,
+  massifDensity: 0.72,
+  plainStrength: 0.8,
+  plateauStrength: 0.75,
+  plateauLift: 0.15,
+  lakeRegion: 2600,
+  lakeDensity: 0.25,
+  lakeDepth: 0.26,
   warp: 1.25,
   mountainErosion: 0.95,
   riverStrength: 0.95,
@@ -113,8 +161,14 @@ export function clampParams(raw: TerrainParams): TerrainParams {
     verticalScale: clamp(raw.verticalScale, 0.05, 10),
     freqScale: clamp(raw.freqScale, 0.02, 20),
     maxMountain: clamp(raw.maxMountain, 1, 100000),
-    belts: clamp(raw.belts, 0.1, 12),
-    beltWidth: clamp(raw.beltWidth, 0.08, 0.95),
+    massifRegion: clamp(raw.massifRegion, 300, 50000),
+    massifDensity: clamp(raw.massifDensity, 0.05, 1),
+    plainStrength: clamp(raw.plainStrength, 0, 1),
+    plateauStrength: clamp(raw.plateauStrength, 0, 1),
+    plateauLift: clamp(raw.plateauLift, 0, 0.4),
+    lakeRegion: clamp(raw.lakeRegion, 200, 40000),
+    lakeDensity: clamp(raw.lakeDensity, 0, 1),
+    lakeDepth: clamp(raw.lakeDepth, 0, 0.5),
     warp: clamp(raw.warp, 0, 6),
     mountainErosion: clamp(raw.mountainErosion, 0, 1.5),
     riverStrength: clamp(raw.riverStrength, 0, 3),
