@@ -1,31 +1,35 @@
 import { TerrainModel } from "./src/terrain/model";
 import { DEFAULT_PARAMS, clampParams, type TerrainParams } from "./src/terrain/params";
 
-/* 多 seed 鲁棒性扫描：最大相邻高差（检测断崖 bug） */
-let worstSeed = 0, worstX = 0, worstY = 0, worstD = 0;
+/* 多 seed 鲁棒性扫描：最大相邻高差（检测断崖 bug）+ 大湖出现情况 */
+let worstSeed = 0, worstX = 0, worstY = 0, worstD = 0, wj = 0, wi = 0;
 for (const seed of [1, 7, 42, 1337, 99999]) {
   const Ps = clampParams({ ...DEFAULT_PARAMS, seed });
   const ms = new TerrainModel(Ps);
   const Ms = ms.M;
   const Ns = 160;
   const spans = Ps.sampleXMax - Ps.sampleXMin;
-  let md = 0, oc = 0, hi = 0, wj = 0, wi = 0;
+  let md = 0, oc = 0, hi = 0, lk = 0, lkMin = 0;
   for (let i = 0; i < Ns; i++) {
-    let prev = ms.sampleSurface(Ps.sampleXMin, Ps.sampleYMin + spans * (i / (Ns - 1))).h;
+    let prevS = ms.sampleSurface(Ps.sampleXMin, Ps.sampleYMin + spans * (i / (Ns - 1)));
+    let prev = prevS.h;
     if (prev < 0) oc++;
     if (prev > Ms * 0.8) hi++;
+    if (prevS.lakeMask > 0.4 && prev < 0) { lk++; if (prev < lkMin) lkMin = prev; }
     for (let j = 1; j < Ns; j++) {
-      const h = ms.sampleSurface(Ps.sampleXMin + spans * (j / (Ns - 1)), Ps.sampleYMin + spans * (i / (Ns - 1))).h;
+      const s = ms.sampleSurface(Ps.sampleXMin + spans * (j / (Ns - 1)), Ps.sampleYMin + spans * (i / (Ns - 1)));
+      const h = s.h;
       const d = Math.abs(h - prev);
       if (d > md) { md = d; wj = j; wi = i; }
       if (h < 0) oc++;
       if (h > Ms * 0.8) hi++;
+      if (s.lakeMask > 0.4 && h < 0) { lk++; if (h < lkMin) lkMin = h; }
       prev = h;
     }
   }
   const tt = Ns * Ns;
   console.log(
-    `seed ${String(seed).padStart(5)} | maxΔh(38m步长) ${md.toFixed(1)}m | ocean ${(oc / tt * 100).toFixed(0)}% | >0.8M ${(hi / tt * 100).toFixed(1)}%`
+    `seed ${String(seed).padStart(5)} | maxΔh(38m步长) ${md.toFixed(1)}m | ocean ${(oc / tt * 100).toFixed(0)}% | >0.8M ${(hi / tt * 100).toFixed(1)}% | lake ${(lk / tt * 100).toFixed(1)}% | 湖深 ${lk ? (-lkMin).toFixed(0) : 0}m`
   );
   if (md > worstD) {
     worstD = md; worstSeed = seed;
@@ -61,6 +65,7 @@ const span = P.sampleXMax - P.sampleXMin;
 const step = span / (N - 1);
 const grid = new Float64Array(N * N);
 const pmGrid = new Float64Array(N * N);
+const lkGrid = new Float64Array(N * N);
 for (let i = 0; i < N; i++) {
   for (let j = 0; j < N; j++) {
     const sx = P.sampleXMin + span * (i / (N - 1));
@@ -68,6 +73,7 @@ for (let i = 0; i < N; i++) {
     const sm = model.sampleSurface(sx, sy);
     grid[i * N + j] = sm.h;
     pmGrid[i * N + j] = sm.plateauMask;
+    lkGrid[i * N + j] = sm.lakeMask;
   }
 }
 
@@ -164,6 +170,48 @@ console.log(
   "| plateau flatness mean|dh| =", platSlopeN ? (platSlopeSum / platSlopeN).toFixed(2) : "n/a", "m",
   "| plateau h range:", platCnt ? `${platMin.toFixed(0)}~${platMax.toFixed(0)}m` : "n/a"
 );
+
+/* 5.7 大湖：湖面覆盖率 + 最大连通湖面（km²）+ 湖深 + 岛屿 */
+{
+  const isLake = (i: number, j: number) => lkGrid[i * N + j] > 0.4 && grid[i * N + j] < 0;
+  const seenL = new Uint8Array(N * N);
+  const lakes: { size: number; minH: number }[] = [];
+  for (let i = 0; i < N; i++)
+    for (let j = 0; j < N; j++) {
+      const idx = i * N + j;
+      if (seenL[idx] || !isLake(i, j)) continue;
+      let size = 0, minH = 0;
+      const stack = [idx];
+      seenL[idx] = 1;
+      while (stack.length) {
+        const c = stack.pop()!;
+        size++;
+        const ci = Math.floor(c / N), cj = c % N;
+        if (grid[c] < minH) minH = grid[c];
+        const nb = [[ci - 1, cj], [ci + 1, cj], [ci, cj - 1], [ci, cj + 1]];
+        for (const [ni, nj] of nb) {
+          if (ni < 0 || nj < 0 || ni >= N || nj >= N) continue;
+          const nidx = ni * N + nj;
+          if (!seenL[nidx] && isLake(ni, nj)) { seenL[nidx] = 1; stack.push(nidx); }
+        }
+      }
+      lakes.push({ size, minH });
+    }
+  lakes.sort((a, b) => b.size - a.size);
+  const cellKm2 = step * step / 1e6;
+  console.log("lakes>0:", lakes.length, "| largest:", (lakes[0]?.size ?? 0) * cellKm2 < 0.01 ? "n/a" : [
+    (lakes[0].size * cellKm2).toFixed(2) + "km²",
+    "深 " + (-lakes[0].minH).toFixed(0) + "m",
+  ].join(" "));
+  for (let li = 0; li < Math.min(3, lakes.length); li++) {
+    const L = lakes[li];
+    console.log(
+      `  lake#${li + 1}: ${(L.size * cellKm2).toFixed(2)} km² | 湖深 ${(-L.minH).toFixed(0)}m | 横跨 ≈ ${Math.sqrt(L.size) * step < 100 ? "<100m" : (Math.sqrt(L.size) * step / 100).toFixed(1) + " 百米"}`
+    );
+  }
+  const lakeTotal = lakes.reduce((s, l) => s + l.size, 0);
+  console.log("lake coverage%:", (lakeTotal / t * 100).toFixed(1));
+}
 
 /* 6. 平滑度：相邻采样点最大高差 */
 let maxDelta = 0, sumDelta = 0, mi = 0, mj = 0;

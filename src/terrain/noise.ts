@@ -193,6 +193,68 @@ export class NoiseLib {
   }
 
   /**
+   * 大湖版 Worley（worley2 的姊妹函数）：F1 距离场 +「成湖门控势场」。
+   *
+   * 输出契约：
+   *   out[0] = F1：到最近特征点的距离（cell 单位，同 worley2）
+   *   out[1] = 成湖势场（0~1，空间处处连续）
+   *
+   * 与 worley2 的区别：振幅通道换成了「per-cell 成湖指示」——
+   *   gate = (h4 > threshold) ? 1 : 0，h4 为与特征点坐标无关的独立哈希
+   *   （均匀分布于 [0,1)），再按与 worley2 相同的高斯核 σ≈0.35cell 加权平均。
+   *
+   * 为什么不直接用 per-cell 二值门控：cell 边界处门控值 0↔1 跳变，
+   * 乘上盆地场后仍会留下 10~20m 级陡坎；高斯核平均把门控平滑成连续势场，
+   * 湖岸因此处处连续。代价是无湖 cell 若紧邻成湖 cell 会有 0.2~0.5 的
+   * 次级势场——表现为大湖外围的浅洼地/小湖，视觉上反而自然。
+   *
+   * threshold 语义（UE5 移植时的频率标定）：
+   *   P(cell 成湖) = 1 - threshold（h4 均匀分布，特征点处势场精确等于门控值）
+   *   → threshold = 1 - lakeDensity 即可精确控制成湖频率；
+   *   相邻成湖 cell 的势场在高斯核下连成一片 → 盆地合并为连体大湖。
+   *
+   * UE5 移植：与 worley2 完全相同的 5×5 邻域扫描 + 包围盒预剔除，
+   * 仅把 ampSum 累加的内容换成二值门控，无其他状态。
+   */
+  worleyLake(x: number, y: number, threshold: number, out: Float32Array) {
+    const fx = Math.floor(x);
+    const fy = Math.floor(y);
+    let f1 = Infinity;
+    let gateSum = 0;
+    let wSum = 0;
+    const cut = 2.1 * 2.1;
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const cx = fx + dx;
+        const cy = fy + dy;
+        const bx = x < cx + 0.04 ? cx + 0.04 : x > cx + 0.96 ? cx + 0.96 : x;
+        const by = y < cy + 0.04 ? cy + 0.04 : y > cy + 0.96 ? cy + 0.96 : y;
+        const bddx = x - bx;
+        const bddy = y - by;
+        if (bddx * bddx + bddy * bddy >= cut) continue;
+        const ix = cx & 255;
+        const iy = cy & 255;
+        const h1 = this.p[(this.p[ix] + iy) & 255] / 255;
+        const h2 = this.p[(this.p[(ix + 57) & 255] + iy) & 255] / 255;
+        // h4：独立于特征点坐标(h1/h2)与山脉振幅(h3)的存在性哈希
+        const h4 = this.p[(this.p[(ix + 177) & 255] + iy) & 255] / 255;
+        const px = cx + 0.5 + (h1 - 0.5) * 0.92;
+        const py = cy + 0.5 + (h2 - 0.5) * 0.92;
+        const ddx = x - px;
+        const ddy = y - py;
+        const d2 = ddx * ddx + ddy * ddy;
+        const d = Math.sqrt(d2);
+        if (d < f1) f1 = d;
+        const w = Math.exp(-d2 * 4.08);
+        gateSum += (h4 > threshold ? 1 : 0) * w;
+        wSum += w;
+      }
+    }
+    out[0] = f1;
+    out[1] = wSum > 0 ? gateSum / wSum : 0;
+  }
+
+  /**
    * 折叠峰谷噪声（Minecraft 1.18 "Peaks & Valleys"，即 folded ridges）：
    *   PV = 1 - | 3 * |weirdness| - 2 |
    * 其中 weirdness = FBM(x, y, oct) 输出（约 [-1, 1]）。

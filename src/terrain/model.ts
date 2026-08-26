@@ -20,6 +20,8 @@ export interface SurfaceSample {
   plateauMask: number;
   /** 气候侵蚀度（0~1）：低=高山带，中=高原带，高=平原带 */
   climateErosion: number;
+  /** 大湖盆强度（0~1，Worley 湖盆场与成湖门控的乘积） */
+  lakeMask: number;
 }
 
 export class TerrainModel {
@@ -30,6 +32,8 @@ export class TerrainModel {
   M: number;
   /** worley2 输出缓冲（避免每采样点分配对象） */
   private wout = new Float32Array(2);
+  /** 湖泊 worley2 输出缓冲 */
+  private woutL = new Float32Array(2);
 
   constructor(params: TerrainParams) {
     this.p = params;
@@ -207,6 +211,59 @@ export class TerrainModel {
       h = h * (1 - pmStep) + (E + plDetail) * pmStep;
     }
 
+    // === 4.7 超大湖 / 内陆海（Great Lakes） ===
+    // 目标：稀疏出现的「模拟海洋」级大湖——横跨十余个区块、深水、有岛屿与峡湾。
+    // 结构（对标 Minecraft 1.18 的 local water levels，但把尺度放大为内陆海）：
+    //   1) 世界按 lakeRegion 米划分湖泊区域（Worley cell），每区域最多一湖；
+    //      worleyLake 的成湖门控势场（高斯平滑的 per-cell 独立哈希）控制频率：
+    //      P(成湖) = lakeDensity → 多数区域无湖（低出现频率、频率精确可控）。
+    //   2) 湖盆 = 特征点距离场 f1 的浅盆地：basin = 1 - smoothstep(0.45R, R, f1)，
+    //      湖岸过渡带宽 ≈ 0.55×lakeR → 岸坡平缓，不会出现垂直湖壁。
+    //   3) 岸线分形：f1 采样坐标叠加低频扰动（±0.09 cell），岸线产生半岛/湾澳
+    //      而非圆形水池；相邻成湖 cell 的盆地自然合并为连体大湖。
+    //   4) 水面 = 海平面（渲染层单一水面；湖 = 低于 sea 的洼地，如里海）。
+    //   5) 深度曲线 pow(basin,1.35)×M×lakeDepth：湖心最深、湖滨渐浅。
+    //   6) 保岛下沉（关键）：湖内目标地形 = 0.58×h - bedDepth×(1-islandFade)——
+    //      低地被开挖到湖床（成片水面），高地仅整体下沉 42%，下沉后仍高于
+    //      水面的保留为岛屿/半岛 → 山地湖 = 峡湾+群岛，平原湖 = 开阔湖盆。
+    // 所有项处处连续 → 无陡坎；UE5 移植：Worley F1 + 两个 fbm + smoothstep 门控，
+    // 全部无状态纯函数，参数见 params.ts lakeRegion/lakeDensity/lakeDepth。
+    let lakeMask = 0;
+    if (P.lakeDensity > 0.001) {
+      const Lk = Math.max(2, P.lakeRegion * k);
+      // 岸线分形扰动（±9% cell 尺度）：让湖岸蜿蜒出半岛与湾澳
+      const shoreN = N.fbm2(uu * (1.1 / Lk) + 311.7, vv * (1.1 / Lk) - 208.9, 3);
+      const lfx = (uu + shoreN * Lk * 0.09) / Lk;
+      const lfy = (vv - shoreN * Lk * 0.07) / Lk;
+      // 成湖门控势场：threshold = 1 - lakeDensity → P(成湖) = lakeDensity
+      N.worleyLake(lfx, lfy, 1 - clamp(P.lakeDensity, 0, 1), this.woutL);
+      const lf1 = this.woutL[0];
+      const lakePot = this.woutL[1];
+      // 湖泊半径（占 cell 比例 0.78~1.08，区域随机）：湖盆略超出单个 cell，
+      // 边缘留给湖岸带；相邻成湖 cell 盆地交叠 → 连体湖
+      const lakeR = 0.78 + 0.3 * (N.fbm2(lfx * 3.1 + 71.7, lfy * 3.1 + 13.9, 2) * 0.5 + 0.5);
+      // 湖盆场：中心 1 → 岸 0；0.45R 宽的过渡带保证岸坡平缓
+      const basin = 1 - smoothstep(lakeR * 0.55, lakeR, lf1);
+      // 陆地门控：海上无湖；紧邻海岸的湖自然弱化并与海连通成海湾/峡湾
+      lakeMask = lakePot * basin * smoothstep(0.22, 0.55, continent);
+      if (lakeMask > 0.001) {
+        // 湖床微起伏（±1.2%M）：湖底不是玻璃平面
+        const bedDetail = M * 0.012 * N.fbm2(u * 0.006 + 88.8, v * 0.006 + 99.1, 2);
+        const bedDepth = M * P.lakeDepth * Math.pow(basin, 1.35);
+        // 保岛下沉：低地(h<0.05M)全额开挖 → 湖床；高地(h>0.3M)既不下沉
+        // 也不挖床（下沉系数随 islandFade 从 0.58 恢复到 1.0）→ 湖盆外围的
+        // 主峰/高山完全不受湖泊影响，中低丘陵下沉后仍高于水面者成为湖中岛屿
+        const islandFade = smoothstep(M * 0.05, M * 0.3, h);
+        const sinkK = 0.58 + 0.42 * islandFade;
+        const target = sea + (h - sea) * sinkK - bedDepth * (1 - islandFade * 0.92) + bedDetail;
+        // 岸线外推：混合权重 ×1.5（湖心平台全额到达湖床深度）。若直接用
+        // lakeMask 做 lerp，水面等值线(h=0)会收缩到 lm≈0.23 的内圈，湖面
+        // 只有湖盆的一半；×1.5 后等值线外推到 lm≈0.15，湖面接近湖盆全尺寸
+        const lw = Math.min(1, lakeMask * 1.5);
+        h = h * (1 - lw) + target * lw;
+      }
+    }
+
     // 软性高度上限：仅压缩极罕见尖峰，日常峰顶分布远低于 M
     const softCeil = M * 0.94;
     if (h > softCeil) h = softCeil + (h - softCeil) * 0.22;
@@ -304,7 +361,7 @@ export class TerrainModel {
 
     const regionMax = Math.max(regions.duneMask, regions.cliffMask, regions.ravMask, regions.eroMask, regions.iqMask);
 
-    return { h, riverMask, regions, regionMax, landMask, mountainMask, plateauMask: pm, climateErosion: climEro };
+    return { h, riverMask, regions, regionMax, landMask, mountainMask, plateauMask: pm, climateErosion: climEro, lakeMask };
   }
 
   getHeight(sx: number, sy: number) {

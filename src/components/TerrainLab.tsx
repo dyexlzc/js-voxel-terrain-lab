@@ -214,7 +214,7 @@ export default function TerrainLab() {
     const spanX = P.sampleXMax - P.sampleXMin;
     const spanY = P.sampleYMax - P.sampleYMin;
 
-    const counts: Record<string, number> = { dune: 0, cliff: 0, ravine: 0, erosion: 0, iq: 0, plains: 0, ocean: 0 };
+    const counts: Record<string, number> = { dune: 0, cliff: 0, ravine: 0, erosion: 0, iq: 0, plains: 0, ocean: 0, lake: 0 };
 
     /* 分块：每 chunk 行让出一帧，避免高分辨率卡死主线程 */
     const chunk = Math.max(8, Math.round(res / 48));
@@ -241,7 +241,9 @@ export default function TerrainLab() {
         pos[idx * 3 + 1] = h;
 
         /* 区域覆盖统计 */
-        if (s.landMask < 0.35) {
+        if (s.lakeMask > 0.4 && h < 0) {
+          counts.lake++;
+        } else if (s.landMask < 0.35) {
           counts.ocean++;
         } else if (s.regionMax > 0.08) {
           const r = s.regions;
@@ -336,6 +338,7 @@ export default function TerrainLab() {
       { label: "IQ山脉", color: "#8fa3b8", pct: pct(counts.iq) },
       { label: "平原", color: "#4f7a3a", pct: pct(counts.plains) },
       { label: "海洋", color: "#1a6baa", pct: pct(counts.ocean) },
+      { label: "大湖", color: "#2e8fbc", pct: pct(counts.lake) },
     ]);
     return true;
   };
@@ -764,8 +767,8 @@ export default function TerrainLab() {
 
           <Group
             n="5"
-            title="山脉 · 高原 · 平原合成"
-            note="Minecraft 1.18 式气候分带：低侵蚀带出全高山脉（PV 折叠噪声形成环状山脊+围谷+尖峰），中侵蚀带山体被削平为台地高原（软量化阶梯边缘），高侵蚀带起伏压缩为成片平原。每个「山脉区域」内仍保持主峰最高、外围次级山脉的层级。"
+            title="山脉 · 高原 · 平原 · 大湖合成"
+            note="Minecraft 1.18 式气候分带：低侵蚀带出全高山脉（PV 折叠噪声形成环状山脊+围谷+尖峰），中侵蚀带山体被削平为台地高原（软量化阶梯边缘），高侵蚀带起伏压缩为成片平原。大湖 = 低频 Worley 湖盆的「内陆海」：每区域最多一湖、低出现频率、湖心深水，山地湖保岛下沉形成峡湾与群岛，相邻湖盆可合并为连体大湖。"
           >
             <div className="grid grid-cols-2 gap-x-4">
               <Slider label="区域尺寸 (m)" value={params.massifRegion} min={400} max={12000} step={100} decimals={0} onChange={(v) => set("massifRegion", v)} />
@@ -773,6 +776,9 @@ export default function TerrainLab() {
               <Slider label="高原强度" value={params.plateauStrength} min={0} max={1} step={0.01} decimals={2} onChange={(v) => set("plateauStrength", v)} />
               <Slider label="高原抬升" value={params.plateauLift} min={0} max={0.4} step={0.01} decimals={2} onChange={(v) => set("plateauLift", v)} />
               <Slider label="平原化强度" value={params.plainStrength} min={0} max={1} step={0.01} decimals={2} onChange={(v) => set("plainStrength", v)} />
+              <Slider label="大湖区域 (m)" value={params.lakeRegion} min={400} max={8000} step={100} decimals={0} onChange={(v) => set("lakeRegion", v)} />
+              <Slider label="大湖频率" value={params.lakeDensity} min={0} max={1} step={0.01} decimals={2} onChange={(v) => set("lakeDensity", v)} />
+              <Slider label="大湖深度" value={params.lakeDepth} min={0} max={0.5} step={0.01} decimals={2} onChange={(v) => set("lakeDepth", v)} />
               <Slider label="Warp" value={params.warp} min={0} max={6} step={0.05} decimals={2} onChange={(v) => set("warp", v)} />
               <Slider label="Mountain Erosion" value={params.mountainErosion} min={0} max={1.5} step={0.01} decimals={2} onChange={(v) => set("mountainErosion", v)} />
               <Slider label="River Strength" value={params.riverStrength} min={0} max={3} step={0.05} decimals={2} onChange={(v) => set("riverStrength", v)} />
