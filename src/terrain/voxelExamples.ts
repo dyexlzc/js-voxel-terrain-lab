@@ -163,7 +163,7 @@ function smoothstep01(a: number, b: number, x: number): number {
  */
 export function cliffsHeight(n: VoxelNoise, x: number, y: number, z: number, freq: number): number {
   const f = freq;
-  const sides = n.perlin2(x * 0.1 * f, y * 0.1 * f, n.pOffset(1)) as number;
+  const sides = n.perlin2(x * 0.1 * f, y * 0.1 * f, 1) as number;
   // 关键：zp = query z（demo 原版即如此，p 显式依赖 z 才是 cliffs 算法的设计）
   const p = clamp((z / 50 + 0.2 * sides) * 10, 0, 1);
   const top = n.iq2(x, y, 0.01 * f, 15) * 25;

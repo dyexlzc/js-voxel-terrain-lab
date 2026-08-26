@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>VoxelFree Terrain Lab — Exact-style Examples + Mountain Synthesis</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#0b1015;color:#e7edf3;font-family:Inter,system-ui,Segoe UI,Arial,sans-serif}
+#app{display:grid;grid-template-columns:360px 1fr;height:100%}#ui{padding:14px;background:#121820;border-right:1px solid #27323d;overflow:auto}
+h1{font-size:17px;margin:0 0 6px}.sub{font-size:11px;line-height:1.45;color:#9aa8b4}.group{background:#161e27;border:1px solid #2b3641;border-radius:9px;padding:10px;margin:9px 0}
+.group h2{font-size:12px;margin:0 0 8px;color:#cfd9e1}label{display:flex;justify-content:space-between;font-size:11px;color:#c1ccd4;margin:6px 0 4px}.v{color:#79cdfc;font-variant-numeric:tabular-nums}
+select,input[type=number]{width:100%;box-sizing:border-box;background:#0d1319;color:#e7edf3;border:1px solid #32404d;border-radius:6px;padding:6px}input[type=range]{width:100%}
+button{background:#202b35;border:1px solid #3b4a56;color:#e9eff3;border-radius:6px;padding:7px 9px;cursor:pointer}button:hover{background:#2b3945}.row{display:flex;gap:7px}.row>*{flex:1}
+.chk{display:flex;gap:7px;align-items:center;font-size:11px;color:#c4d0d8;margin:6px 0}.chk input{width:auto}.hint{font-size:10px;color:#8898a6;line-height:1.5}
+#view{position:relative;min-width:0}#map{position:absolute;right:12px;top:12px;width:250px;height:250px;z-index:4;border:1px solid #3a4650;border-radius:8px;background:#091016}
+#hud{position:absolute;left:12px;top:12px;z-index:4;font-size:11px;line-height:1.5;padding:8px 10px;border-radius:7px;background:rgba(6,10,14,.74);border:1px solid rgba(255,255,255,.08);max-width:430px}.legend{font-size:10px;color:#8fa0ad}
+.badge{display:inline-block;padding:2px 5px;border-radius:4px;background:#22303b;color:#9edbff;margin-right:4px}.ok{color:#89e6a8}.warn{color:#ffd58a}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.185.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.185.0/examples/jsm/"}}</script>
+</head>
+<body>
+<div id="app"><aside id="ui">
+<h1>VoxelFree Terrain Lab</h1><div class="sub">7 个 Voxel Example + 山脉合成器。前 5 个是高度场；Cave/Ravines 使用 density，再以表面搜索显示。Noise 采用 VoxelFastNoise 的结构：FastFloor、Quintic、12 梯度、FBM FractalBounding、3D Perlin，并保留 SetSeed 的 256-j 历史 bug。</div>
+<div class="group"><h2>算法</h2><select id="mode">
+<option value="cliffs">1 · VoxelExample_Cliffs</option><option value="dunes">2 · VG_Example_Dunes</option><option value="cave">3 · VoxelExample_Cave</option><option value="ravines">4 · VoxelExample_Ravines</option><option value="erosion">5 · VG_Example_Erosion</option><option value="multi">6 · VG_Example_MultiIndex</option><option value="iq">7 · VoxelExample_IQNoise</option><option value="mountain">8 · Mountain Synth (Voxel + Belt)</option><option value="mountainRiver">9 · Mountain Synth + Watershed</option></select>
+<label>Seed <span id="seedV" class="v"></span></label><input id="seed" type="number" value="1337" step="1"><div class="row" style="margin-top:7px"><button id="regen">重新生成</button><button id="random">随机 Seed</button></div></div>
+<div class="group"><h2>通用尺度 / 采样窗口</h2>
+<label>Resolution <span id="resV" class="v"></span></label><input id="res" type="range" min="96" max="320" step="32" value="192">
+<label id="volResLabel">Volume Resolution <span id="volResV" class="v"></span></label><input id="volRes" type="range" min="16" max="64" step="8" value="32">
+<label>World Size X (m) <span id="worldXV" class="v"></span></label><input id="worldX" type="range" min="250" max="10000" step="50" value="2500">
+<label>World Size Y (m) <span id="worldYV" class="v"></span></label><input id="worldY" type="range" min="250" max="10000" step="50" value="2500">
+<label>Voxel Size (m) <span id="voxelV" class="v"></span></label><input id="voxel" type="range" min="0.5" max="50" step="0.5" value="5">
+<div class="xy-grid">
+  <div><label>Sample X Min (voxel)</label><input id="sampleXMin" type="number" value="-250" step="1"></div>
+  <div><label>Sample X Max (voxel)</label><input id="sampleXMax" type="number" value="250" step="1"></div>
+  <div><label>Sample Y Min (voxel)</label><input id="sampleYMin" type="number" value="-250" step="1"></div>
+  <div><label>Sample Y Max (voxel)</label><input id="sampleYMax" type="number" value="250" step="1"></div>
+</div>
+<div class="mini">地形函数使用这里的 X/Y 采样坐标；World Size 只控制最终 3D 地图的物理显示范围。VoxelSize 仅用于米↔Voxel 的默认映射参考。</div>
+<label>Vertical Scale <span id="vertV" class="v"></span></label><input id="vert" type="range" min="0.25" max="1.5" step="0.05" value="0.65">
+<label>Frequency Scale <span id="freqV" class="v"></span></label><input id="freq" type="range" min="0.5" max="2.0" step="0.05" value="1">
+<div class="chk"><input id="wire" type="checkbox"> Wireframe</div><div class="chk"><input id="heat" type="checkbox" checked> 高程色带</div></div>
+<div class="group" id="duneParams" style="display:none"><h2>Dunes 风向</h2><label>Wind X <span id="duneDirXV" class="v"></span></label><input id="duneDirX" type="range" min="-1" max="1" step="0.05" value="1"><label>Wind Y <span id="duneDirYV" class="v"></span></label><input id="duneDirY" type="range" min="-1" max="1" step="0.05" value="0"><div class="mini">风向决定 phase 的传播方向；沙丘脊线会近似垂直于风向。</div></div>
+<div class="group" id="voxelParams"><h2>Voxel Example 参数</h2>
+<label>Octaves <span id="octV" class="v"></span></label><input id="oct" type="range" min="1" max="15" value="7">
+<label>Gain <span id="gainV" class="v"></span></label><input id="gain" type="range" min="0.25" max="0.75" step="0.05" value="0.5">
+<label>Cliff Strength <span id="cliffV" class="v"></span></label><input id="cliff" type="range" min="0" max="1" step="0.02" value="0.45">
+<label>Ravine Strength <span id="ravV" class="v"></span></label><input id="rav" type="range" min="0" max="1" step="0.02" value="0.35">
+<label>Erosion Strength <span id="eroV" class="v"></span></label><input id="ero" type="range" min="0" max="1" step="0.02" value="0.35">
+</div>
+<div class="group" id="beltParams"><h2>Mountain Synth 参数</h2>
+<label>Belts <span id="beltsV" class="v"></span></label><input id="belts" type="range" min="1" max="5" value="3">
+<label>Belt Width <span id="bwV" class="v"></span></label><input id="bw" type="range" min="0.035" max="0.22" step="0.005" value="0.10">
+<label>Max Mountain (m) <span id="mhV" class="v"></span></label><input id="mh" type="range" min="150" max="1200" step="10" value="650">
+<label>Branching <span id="branchV" class="v"></span></label><input id="branch" type="range" min="0" max="1" step="0.02" value="0.45">
+<label>Warp <span id="warpV" class="v"></span></label><input id="warp" type="range" min="0" max="0.25" step="0.005" value="0.08">
+<label>Ridge Sharpness <span id="ridgeV" class="v"></span></label><input id="ridge" type="range" min="0.8" max="4" step="0.05" value="1.8">
+<label>Watershed Rivers <span id="riverV" class="v"></span></label><input id="river" type="range" min="0" max="1" step="0.02" value="0.7">
+</div>
+<div class="group hint"><span class="badge">准确性</span> Perlin / FBM / FractalBounding / FastFloor / 3D Perlin 依据公开 VoxelPluginFreeLegacy 源码复写；SetSeed 保留 256-j bug。完整原版 C++ 还包含大量 LUT/跨平台随机分布细节，浏览器版当前把这些可验证部分直接落地，最终 bit-for-bit 对拍建议用 C++ 输出基准点。</div>
+<div class="group hint"><b>设计原则</b><br>Examples 负责“局部地貌算子”；Mountain Synth 负责“山系在哪里”；Watershed 负责“谷从哪里来”。最终合成不是 Noise 相加，而是 Belt × Ridge × FBM，再用 Cliff/Ravine/Erosion 做受掩码雕刻。</div>
+</aside><main id="view"><div id="hud">Generating...</div><canvas id="map" width="512" height="512"></canvas></main></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------- Voxel-style math ----------
+const PI=Math.PI, TAU=Math.PI*2;
+const Gx=[1,-1,1,-1,1,-1,1,-1,0,0,0,0], Gy=[1,1,-1,-1,0,0,0,0,1,-1,1,-1], Gz=[0,0,0,0,1,1,-1,-1,1,1,-1,-1];
+function fastFloor(f){return f>=0?Math.trunc(f):Math.trunc(f)-1}
+function quintic(t){return t*t*t*(t*(t*6-15)+10)}
+function quinticDeriv(t){return 30*t*t*(t-1)*(t-1)}
+function lerp(a,b,t){return a+t*(b-a)}
+class MT19937{constructor(seed){this.mt=new Uint32Array(624);this.i=624;this.mt[0]=seed>>>0;for(let i=1;i<624;i++)this.mt[i]=(Math.imul(1812433253,this.mt[i-1]^(this.mt[i-1]>>>30))+i)>>>0}
+ twist(){for(let i=0;i<624;i++){const y=(this.mt[i]&0x80000000)|(this.mt[(i+1)%624]&0x7fffffff);this.mt[i]=(this.mt[(i+397)%624]^(y>>>1)^((y&1)?0x9908b0df:0))>>>0}this.i=0}
+ next(){if(this.i>=624)this.twist();let y=this.mt[this.i++];y^=y>>>11;y^=y<<7&0x9d2c5680;y^=y<<15&0xefc60000;y^=y>>>18;return y>>>0}
+ uniform(n){ // deterministic rejection; mirrors standard uniform_int_distribution intent
+  const range=n+1, lim=0x100000000-(0x100000000%range);let r;do{r=this.next()}while(r>=lim);return r%range;
+ }}
+function buildPerm(seed){const gen=new MT19937(seed|0), p=new Uint16Array(512), p12=new Uint8Array(512);for(let i=0;i<256;i++)p[i]=i;for(let j=0;j<256;j++){const k=j+gen.uniform(256-j);const l=p[j];p[j]=p[j+256]=p[k];p[k]=l;p12[j]=p12[j+256]=p[j]%12}return {p,p12}}
+class VoxelNoise{constructor(seed){this.seed=seed|0;this.P=buildPerm(seed);this.gain=.5;this.lac=2;this.fracBound=1;this.setOct(7)}setOct(o){let a=1,amp=.5;for(let i=1;i<o;i++){a+=amp;amp*=this.gain}this.fracBound=1/a}
+ idx2(off,x,y){const p=this.P.p,p12=this.P.p12;return p12[((x&255)+p[(y&255)+off])&511]}
+ idx3(off,x,y,z){const p=this.P.p,p12=this.P.p12;return p12[((x&255)+p[(y&255)+p[(z&255)+off]])&511]}
+ grad2(off,x,y,dx,dy){const q=this.idx2(off,x,y);return dx*Gx[q]+dy*Gy[q]}
+ grad2v(off,x,y,dx,dy){const q=this.idx2(off,x,y);return [dx*Gx[q]+dy*Gy[q],Gx[q],Gy[q]]}
+ grad3(off,x,y,z,dx,dy,dz){const q=this.idx3(off,x,y,z);return dx*Gx[q]+dy*Gy[q]+dz*Gz[q]}
+ perlin2(x,y,off=0,deriv=false){const x0=fastFloor(x),y0=fastFloor(y),x1=x0+1,y1=y0+1,fx=x-x0,fy=y-y0,xs=quintic(fx),ys=quintic(fy);const a=this.grad2v(off,x0,y0,fx,fy),b=this.grad2v(off,x1,y0,fx-1,fy),c=this.grad2v(off,x0,y1,fx,fy-1),d=this.grad2v(off,x1,y1,fx-1,fy-1);const va=a[0],vb=b[0],vc=c[0],vd=d[0],val=va+xs*(vb-va)+ys*(vc-va)+xs*ys*(va-vb-vc+vd);if(!deriv)return val;const dxI=quinticDeriv(fx),dyI=quinticDeriv(fy);const dx=a[1]+xs*(b[1]-a[1])+ys*(c[1]-a[1])+xs*ys*(a[1]-b[1]-c[1]+d[1])+dxI*(ys*(va-vb-vc+vd)+vb-va);const dy=a[2]+xs*(b[2]-a[2])+ys*(c[2]-a[2])+xs*ys*(a[2]-b[2]-c[2]+d[2])+dyI*(xs*(va-vb-vc+vd)+vc-va);return [val,dx,dy]}
+ perlin3(x,y,z,off=0){const x0=fastFloor(x),y0=fastFloor(y),z0=fastFloor(z),fx=x-x0,fy=y-y0,fz=z-z0,xs=quintic(fx),ys=quintic(fy),zs=quintic(fz),x1=x0+1,y1=y0+1,z1=z0+1;const a=lerp(this.grad3(off,x0,y0,z0,fx,fy,fz),this.grad3(off,x1,y0,z0,fx-1,fy,fz),xs),b=lerp(this.grad3(off,x0,y1,z0,fx,fy-1,fz),this.grad3(off,x1,y1,z0,fx-1,fy-1,fz),xs),c=lerp(this.grad3(off,x0,y0,z1,fx,fy,fz-1),this.grad3(off,x1,y0,z1,fx-1,fy,fz-1),xs),d=lerp(this.grad3(off,x0,y1,z1,fx,fy-1,fz-1),this.grad3(off,x1,y1,z1,fx-1,fy-1,fz-1),xs);return lerp(lerp(a,b,ys),lerp(c,d,ys),zs)}
+ fbm2(x,y,freq,oct){x*=freq;y*=freq;let sum=this.perlin2(x,y,this.P.p[0]),amp=1;for(let i=1;i<oct;i++){x*=this.lac;y*=this.lac;amp*=this.gain;sum+=this.perlin2(x,y,this.P.p[i])*amp}return sum*this.fracBound}
+ fbm2d(x,y,freq,oct){x*=freq;y*=freq;let sum=this.perlin2(x,y,this.P.p[0],true),amp=1,dx=sum[1],dy=sum[2],s=sum[0];for(let i=1;i<oct;i++){x*=this.lac;y*=this.lac;amp*=this.gain;const v=this.perlin2(x,y,this.P.p[i],true);s+=v[0]*amp;dx+=v[1]*amp;dy+=v[2]*amp}return [s*this.fracBound,dx*this.fracBound,dy*this.fracBound]}
+ iq2(x,y,freq,oct){ // Inigo-style IQ noise used by Voxel: rotated domain and derivative weighting
+  let xx=x*freq,yy=y*freq,sum=0,amp=1,dx=0,dy=0;const ang=.6981317008,c=Math.cos(ang),s=Math.sin(ang);for(let i=0;i<oct;i++){const n=this.perlin2(xx,yy,this.P.p[i],true);const w=amp/(1+n[1]*n[1]+n[2]*n[2]);sum+=n[0]*w;dx+=n[1]*w;dy+=n[2]*w;const rx=c*xx-s*yy,ry=s*xx+c*yy;xx=rx*2;yy=ry*2;amp*=.5}return sum*this.fracBound}
+}
+function murmur32(x){x|=0;x=Math.imul(x^x>>>16,0x85ebca6b);x=Math.imul(x^x>>>13,0xc2b2ae35);return (x^x>>>16)>>>0}
+function smoothUnion(a,b,k){if(k<=0)return Math.min(a,b);const h=clamp(.5+.5*(b-a)/k,0,1);return (b+(a-b)*h)-k*h*(1-h)}
+function smoothIntersection(a,b,k){if(k<=0)return Math.max(a,b);const h=clamp(.5-.5*(b-a)/k,0,1);return (b+(a-b)*h)+k*h*(1-h)}
+function clamp(x,a,b){return Math.max(a,Math.min(b,x))}
+function smoothstep(a,b,x){const t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t)}
+
+// ---------- Example formulas ----------
+function cliffsTerms(x,y,n){
+ const f=state.freq; n.gain=state.gain; n.setOct(state.oct);
+ // The Voxel graph computes this base node, but the final Value shown in the
+ // supplied node graph is Z-H; therefore base is intentionally not injected into H.
+ const base=n.fbm2(x,y,.005*f,3)+state.offset/10;
+ const sides=n.perlin2(x*.1*f,y*.1*f,n.P.p[1]);
+ const top=n.iq2(x,y,.01*f,15)*25;
+ return {base,sides,top};
+}
+function cliffsDensity(x,y,z,n){
+ const t=cliffsTerms(x,y,n);
+ // Critical: p depends on Z. Cliffs is therefore an implicit 3D density,
+ // even though its zero-set is a height-like surface.
+ const p=clamp((z/50 + .2*t.sides)*10,0,1);
+ const h=50*p+lerp(0,t.top,p);
+ return z-h;
+}
+function cliffsSurfaceHeight(x,y,n){
+ const zMin=-120,zMax=220,steps=48;
+ let zPrev=zMax,dPrev=cliffsDensity(x,y,zPrev,n);
+ for(let s=1;s<=steps;s++){
+   const z=zMax-(zMax-zMin)*s/steps;
+   const d=cliffsDensity(x,y,z,n);
+   if(Number.isFinite(dPrev)&&Number.isFinite(d) && ((dPrev>=0&&d<=0)||(dPrev<=0&&d>=0))){
+     let lo=Math.min(zPrev,z),hi=Math.max(zPrev,z),dlo=dPrev;
+     for(let i=0;i<20;i++){
+       const m=(lo+hi)*.5,dm=cliffsDensity(x,y,m,n);
+       if((dlo>=0&&dm>=0)||(dlo<=0&&dm<=0)){lo=m;dlo=dm;} else hi=m;
+     }
+     return (lo+hi)*.5;
+   }
+   zPrev=z;dPrev=d;
+ }
+ return zMin;
+}
+function exampleHeight(name,x,y,zp,n){
+ const f=state.freq, o=state.oct, gain=state.gain; n.gain=gain;n.setOct(o);
+ // VoxelPlugin examples operate in voxel coordinates.
+ if(name==='cliffs'){
+   const t=cliffsTerms(x,y,n);
+   const p=clamp((zp/50+.2*t.sides)*10,0,1);
+   return 50*p+lerp(0,t.top,p);
+ }
+ if(name==='dunes'){
+   const dx=state.duneDirX, dy=state.duneDirY;
+   const phase=n.fbm2(x,y,.001*f,3)+.002*(x*dx+y*dy)*f;
+   return -75*Math.abs(Math.sin(Math.PI*phase));
+ }
+ if(name==='multi') return 300*n.fbm2(x,y,.002*f,7);
+ if(name==='iq') return 500*n.iq2(x,y,.001*f,15);
+ if(name==='erosion'){
+   const q=n.fbm2d(x,y,.001*f,3),w=smoothstep(-.5,0,q[0]);
+   const e=erosionNoise(n,x,y,.02*f,5); return 500*(q[0]+.008*e*w);
+ }
+ return 0;
+}
+function erosionNoise(n,x,y,freq,oct){let xx=x*freq,yy=y*freq,sum=0,amp=1;for(let o=0;o<oct;o++){// 5x5 gavoronoi-ish flow kernel: cheap faithful structural analogue
+   const cx=fastFloor(xx),cy=fastFloor(yy),fx=xx-cx,fy=yy-cy;let best=1e9,bx=0,by=0;
+   for(let j=-2;j<=2;j++)for(let i=-2;i<=2;i++){const h=murmur32((cx+i)*374761393^(cy+j)*668265263^(state.seed+o*97));const ang=(h/4294967296)*TAU;const px=i+.5+.5*Math.cos(ang),py=j+.5+.5*Math.sin(ang);const dx=fx-px,dy=fy-py,d=dx*dx+dy*dy;if(d<best){best=d;bx=dx;by=dy}}
+   const g=n.perlin2(xx,yy,n.P.p[o],true);const dir=-(g[1]*bx+g[2]*by);sum+=dir*Math.exp(-best*2)*amp;xx*=2;yy*=2;amp*=.5;
+ }return sum}
+function caveColumn(n,x,y){
+  // VoxelExample_Cave: top/bot are 3-octave fractal Perlin height fields;
+  // they do NOT pass the frequency into the raw Perlin offset argument.
+  return {
+    top:n.fbm2(x,y,.005*state.freq,3)*150,
+    bot:n.fbm2(x+391,y-71,.008*state.freq,3)*150,
+    tube:400-Math.hypot(x,y),
+    global:n.iq2(x,y,.005*state.freq,15)*200+150
+  };
+}
+function caveDensityFromColumn(z,c){
+  const band=smoothUnion(c.top-z,z-c.bot,25)+50;
+  return smoothIntersection(z-c.global,smoothUnion(c.tube,band,100),15);
+}
+function densityExample(name,x,y,z,n){
+ if(name==='ravines'){
+   // VoxelExample_Ravines: frequency 0.02 scales the 3D coordinates.
+   const f=.02*state.freq;
+   const p=n.perlin3(x*f,y*f,z*f,n.P.p[0]);
+   const top=smoothIntersection(z,5*p,5);
+   return smoothUnion(z+50,top,5);
+ }
+ if(name==='cave') return caveDensityFromColumn(z,caveColumn(n,x,y));
+ return z-exampleHeight(name,x,y,z,n);
+}
+
+// ---------- Mountain synthesis ----------
+class Rng{constructor(s){this.s=(s>>>0)||1}next(){let x=this.s;x^=x<<13;x^=x>>>17;x^=x<<5;this.s=x>>>0;return this.s/4294967296}}
+function spine(r,N=9){let p=[],y=r.next()*1.5-.75,b=r.next()*.5-.25;for(let i=0;i<N;i++){const t=i/(N-1),x=-1.15+2.3*t;b=(b*.82+(r.next()*2-1)*.18);y+=b*.14;p.push({x,y:y+Math.sin(t*Math.PI*2)*.08})}return p}
+function distLine(x,y,p){let bd=1e9,along=0,ba=0,tx=1,ty=0;for(let i=0;i<p.length-1;i++){const a=p[i],b=p[i+1],vx=b.x-a.x,vy=b.y-a.y,ll=vx*vx+vy*vy,w=x-a.x,q=y-a.y,t=clamp((w*vx+q*vy)/ll,0,1),px=a.x+vx*t,py=a.y+vy*t,d=(x-px)**2+(y-py)**2;if(d<bd){bd=d;ba=along+Math.sqrt(ll)*t;const l=Math.sqrt(ll);tx=vx/l;ty=vy/l}along+=Math.sqrt(ll)}return {d:Math.sqrt(bd),along:ba,tx,ty}}
+function branch(p,r){const k=Math.max(1,Math.floor(r.next()*(p.length-2))+1),c=p[k],a=p[k-1],b=p[k+1],tx=b.x-a.x,ty=b.y-a.y,l=Math.hypot(tx,ty)||1,nx=-ty/l,ny=tx/l,s=r.next()<.5?-1:1;let x=c.x,y=c.y,dx=(tx/l*.4+nx*.45*s),dy=(ty/l*.4+ny*.45*s),o=[{x,y}];for(let i=1;i<5;i++){dx=.78*dx+(r.next()-.5)*.2;dy=.78*dy+(r.next()-.5)*.2;x+=dx*.3;y+=dy*.3;o.push({x,y})}return o}
+function mountainHeight(x,y,n,spines){let best=1e9,qBest=null;for(const p of spines){const q=distLine(x,y,p);if(q.d<best){best=q.d;qBest=q}}const belt=Math.exp(-(best*best)/(2*state.bw*state.bw));const wx=n.fbm2(x,y,.8,3),wy=n.fbm2(x+17,y-23,.8,3);const xx=x+wx*state.warp,yy=y+wy*state.warp;let qb=qBest;const dw=distLine(xx,yy,spines[0]);qb=dw.d<best?dw:qb;const directional= n.fbm2(xx*1.0,yy*2.4,.9,5);const ridge=Math.pow(clamp(.5+.5*directional,0,1),state.ridge);const macro=.78+.22*(.5+.5*n.iq2(x,y,.7,6));let h=state.mh*belt*(.45+.55*ridge)*macro;const cliffMask=smoothstep(.45,.88,belt)*Math.pow(clamp((h/state.mh),0,1),1.6);h+=state.cliff*75*cliffMask*(.5+.5*Math.sin(h*.11));
+ const rav=n.fbm2(x*1.6,y*1.6,.7,4);const ravMask=smoothstep(.55,.8,Math.abs(rav));h-=state.rav*110*ravMask*belt*belt;
+ const d=n.fbm2d(x,y,1.8,4),slope=Math.hypot(d[1],d[2]);h-=state.ero*90*smoothstep(.2,.85,slope)*(1-belt*.25);
+ return Math.max(0,h);
+}
+function riverCarve(h,x,y,n){let q=n.fbm2d(x,y,.65,5),gx=q[1],gy=q[2],g=Math.hypot(gx,gy);if(g<1e-4)return h;const div=(x*0.37+y*0.21+q[0]*1.8);const rid=smoothstep(.15,.9,Math.abs(div));return h-state.river*150*rid*(1-smoothstep(.0,.55,Math.abs(q[0])))}
+
+// ---------- Renderer ----------
+const el=id=>document.getElementById(id); const state={seed:1337,res:192,worldX:2500,worldY:2500,voxel:5,sampleXMin:-250,sampleXMax:250,sampleYMin:-250,sampleYMax:250,vert:.65,freq:1,oct:7,gain:.5,cliff:.45,rav:.35,ero:.35,belts:3,bw:.1,mh:650,branch:.45,warp:.08,ridge:1.8,river:.7,duneDirX:1,duneDirY:0,mode:'cliffs',offset:0};
+const binds=['seed','res','volRes','worldX','worldY','voxel','sampleXMin','sampleXMax','sampleYMin','sampleYMax','vert','freq','oct','gain','cliff','rav','ero','belts','bw','mh','branch','warp','ridge','river','duneDirX','duneDirY'];
+const intKeys=new Set(['seed','res','volRes','belts']);
+const fmt=(k,v)=>{if(k==='seed')return String(v|0);if(k==='res'||k==='belts')return String(v|0);return Number(v).toFixed(k.startsWith('sample')?1:(k==='voxel'?1:2))};
+for(const k of binds){const e=el(k),o=el(k+'V');if(!e)continue;const sync=()=>{const v=intKeys.has(k)?parseInt(e.value,10):parseFloat(e.value);state[k]=Number.isFinite(v)?v:0;if(o)o.textContent=fmt(k,state[k]);};e.addEventListener('input',()=>{sync();generate()});sync()}
+function syncSampleDefaults(){const spanX=state.worldX/(2*state.voxel),spanY=state.worldY/(2*state.voxel);if(!el('sampleXMin').dataset.user){el('sampleXMin').value=-Math.round(spanX);state.sampleXMin=-Math.round(spanX)}if(!el('sampleXMax').dataset.user){el('sampleXMax').value=Math.round(spanX);state.sampleXMax=Math.round(spanX)}if(!el('sampleYMin').dataset.user){el('sampleYMin').value=-Math.round(spanY);state.sampleYMin=-Math.round(spanY)}if(!el('sampleYMax').dataset.user){el('sampleYMax').value=Math.round(spanY);state.sampleYMax=Math.round(spanY)}}
+for(const k of ['sampleXMin','sampleXMax','sampleYMin','sampleYMax']){el(k).addEventListener('input',()=>{el(k).dataset.user='1';state[k]=parseFloat(el(k).value)||0;generate()})}
+for(const k of ['worldX','worldY','voxel']) el(k).addEventListener('input',()=>{syncSampleDefaults();generate()});
+el('mode').onchange=()=>{state.mode=el('mode').value;updateVisibility();generate()};el('regen').onclick=generate;el('random').onclick=()=>{el('seed').value=(Math.random()*1e9)|0;el('seed').dispatchEvent(new Event('input'))};
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x95aab9);const camera=new THREE.PerspectiveCamera(55,1,.1,30000);camera.position.set(0,1100,1600);const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(1,1);el('view').appendChild(renderer.domElement);const orbit=new OrbitControls(camera,renderer.domElement);orbit.enableDamping=true;orbit.maxPolarAngle=Math.PI*.49;orbit.minDistance=120;orbit.maxDistance=20000;scene.add(new THREE.HemisphereLight(0xdaf0ff,0x3b413d,2.2));const sun=new THREE.DirectionalLight(0xffffff,3);sun.position.set(-900,1600,700);scene.add(sun);
+let mesh=null,geo=null,terrainRoot=null; let buildToken=0; const map=el('map'),ctx=map.getContext('2d');
+function colorH(t){if(!el('heat').checked)return `rgb(${110+Math.round(70*t)},${125+Math.round(80*t)},${105+Math.round(60*t)})`;const stops=[[0.0,[34,63,44]],[.18,[69,104,73]],[.38,[124,128,79]],[.56,[160,130,91]],[.72,[126,112,104]],[.86,[198,201,196]],[1,[250,250,250]]];let i=0;while(i<stops.length-1&&t>stops[i+1][0])i++;const a=stops[i],b=stops[Math.min(i+1,stops.length-1)],u=(t-a[0])/(b[0]-a[0]||1);const c=a[1].map((v,j)=>Math.round(v+(b[1][j]-v)*u));return `rgb(${c[0]},${c[1]},${c[2]})`}
+function drawMap(h,n,min,max){ctx.clearRect(0,0,512,512);for(let j=0;j<n;j++)for(let i=0;i<n;i++){const v=(h[j*n+i]-min)/(max-min||1);ctx.fillStyle=colorH(v);ctx.fillRect(i*512/n,j*512/n,512/n+1,512/n+1)}}
+function surfaceFromDensity(name,x,y,n){
+ const zMin=name==='cave'?-320:-120,zMax=name==='cave'?520:80,steps=name==='cave'?128:96,dz=(zMax-zMin)/steps;
+ const col=name==='cave'?caveColumn(n,x,y):null;
+ const evalD=z=>name==='cave'?caveDensityFromColumn(z,col):densityExample(name,x,y,z,n);
+ let zPrev=zMax,dPrev=evalD(zPrev),best=null;
+ for(let s=1;s<=steps;s++){
+   const z=zMax-s*dz,d=evalD(z);
+   if(Number.isFinite(dPrev)&&Number.isFinite(d) && ((dPrev>=0&&d<=0)||(dPrev<=0&&d>=0))){
+     let lo=Math.min(zPrev,z),hi=Math.max(zPrev,z),dlo=dPrev;
+     for(let i=0;i<18;i++){
+       const m=(lo+hi)*.5,dm=evalD(m);
+       if((dlo>=0&&dm>=0)||(dlo<=0&&dm<=0)){lo=m;dlo=dm;}else hi=m;
+     }
+     best=(lo+hi)*.5;break;
+   }
+   zPrev=z;dPrev=d;
+ }
+ return best===null?zMin:best;
+}
+
+// True volumetric preview for Cave/Ravines.
+// A heightfield can only show the first Z crossing, so it cannot represent overhangs/cave interiors.
+const TETRAS=[[0,1,2,6],[0,2,3,6],[0,3,7,6],[0,7,4,6],[0,4,5,6],[0,5,1,6]];
+const TET_EDGES=[[0,1],[1,2],[2,0],[0,3],[1,3],[2,3]];
+function interpIso(a,b,da,db){const d=da-db;const t=Math.abs(d)<1e-12?0.5:clamp(da/d,0,1);return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t]}
+function tetraTriangles(tp,td){
+ const hits=[];
+ for(const [a,b] of TET_EDGES){const da=td[a],db=td[b];if((da<0&&db>=0)||(da>=0&&db<0))hits.push(interpIso(tp[a],tp[b],da,db));}
+ if(hits.length===3)return [hits];
+ if(hits.length===4)return [[hits[0],hits[1],hits[2]],[hits[0],hits[2],hits[3]]];
+ return [];
+}
+function buildVolumeMesh(name,nv,x0,x1,y0,y1,z0,z1,noise,token){
+ const N=Math.max(12,nv|0), total=N*N*N;
+ const vals=new Float32Array(total);
+ const tops=name==='cave'?new Float32Array(N*N):null, bots=name==='cave'?new Float32Array(N*N):null, tubes=name==='cave'?new Float32Array(N*N):null, globals=name==='cave'?new Float32Array(N*N):null;
+ const colIndex=(i,j)=>j*N+i, id=(i,j,k)=> (k*N+j)*N+i;
+ for(let j=0;j<N;j++){
+   const y=y0+(y1-y0)*j/(N-1);
+   for(let i=0;i<N;i++){
+     const x=x0+(x1-x0)*i/(N-1);
+     if(name==='cave'){
+       const c=caveColumn(noise,x,y),ci=colIndex(i,j);tops[ci]=c.top;bots[ci]=c.bot;tubes[ci]=c.tube;globals[ci]=c.global;
+     }
+   }
+ }
+ for(let k=0;k<N;k++){
+   const z=z0+(z1-z0)*k/(N-1);
+   for(let j=0;j<N;j++){
+     const y=y0+(y1-y0)*j/(N-1);
+     for(let i=0;i<N;i++){
+       const x=x0+(x1-x0)*i/(N-1);
+       let d;
+       if(name==='cave'){
+         const ci=colIndex(i,j),c={top:tops[ci],bot:bots[ci],tube:tubes[ci],global:globals[ci]};d=caveDensityFromColumn(z,c);
+       }else d=densityExample('ravines',x,y,z,noise);
+       vals[id(i,j,k)]=d;
+     }
+   }
+ }
+ const positions=[], indices=[];
+ const cube=[ [0,0,0],[1,0,0],[1,1,0],[0,1,0],[0,0,1],[1,0,1],[1,1,1],[0,1,1] ]; let vertCount=0;
+ for(let k=0;k<N-1;k++)for(let j=0;j<N-1;j++)for(let i=0;i<N-1;i++){
+   const base=[];
+   for(const [dx,dy,dz] of cube){const gx=i+dx,gy=j+dy,gz=k+dz;base.push({p:[x0+(x1-x0)*gx/(N-1),y0+(y1-y0)*gy/(N-1),z0+(z1-z0)*gz/(N-1)],d:vals[id(gx,gy,gz)]});}
+   for(const tet of TETRAS){const tp=tet.map(q=>base[q].p),td=tet.map(q=>base[q].d);const tris=tetraTriangles(tp,td);for(const tri of tris){for(const v of tri){positions.push(v[0],v[1],v[2]);}indices.push(vertCount,vertCount+1,vertCount+2);vertCount+=3;}}
+ }
+ const arr=new Float32Array(positions);const posM=new THREE.BufferAttribute(arr,3);const g=new THREE.BufferGeometry();g.setAttribute('position',posM);g.setIndex(indices);g.computeVertexNormals();
+ const cols=new Float32Array(positions.length);
+ let minZ=z0,maxZ=z1;for(let i=0;i<positions.length/3;i++){const z=positions[i*3+2];const t=clamp((z-minZ)/(maxZ-minZ||1),0,1);const c=new THREE.Color(colorH(t));cols[i*3]=c.r;cols[i*3+1]=c.g;cols[i*3+2]=c.b;}g.setAttribute('color',new THREE.BufferAttribute(cols,3));
+ const mat=new THREE.MeshStandardMaterial({roughness:.95,metalness:0,vertexColors:true,side:THREE.DoubleSide,wireframe:el('wire').checked});
+ const m=new THREE.Mesh(g,mat);const group=new THREE.Group();group.add(m);
+ // Voxel coordinates (X,Y,Z) map to Three.js world (X,Z,-Y): Y is horizontal, Z is height.
+ const axisFix=new THREE.Matrix4().makeRotationX(-Math.PI/2);
+ g.applyMatrix4(axisFix);
+ const scale=state.voxel;const cx=(x0+x1)*.5,cy=(y0+y1)*.5; m.scale.set(scale,scale,scale);m.position.set(-cx*scale,0,cy*scale);
+ return {group,geometry:g,vertices:positions.length/3};
+}
+
+function disposeTerrain(){if(!terrainRoot)return;scene.remove(terrainRoot);terrainRoot.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material){if(Array.isArray(o.material))o.material.forEach(m=>m?.dispose());else o.material.dispose();}});terrainRoot=null;mesh=null;geo=null;}
+function build(token){if(token!==buildToken)return;const t=performance.now(),n=state.res,worldX=state.worldX,worldY=state.worldY,voxel=state.voxel,noise=new VoxelNoise(state.seed);noise.gain=state.gain;noise.setOct(state.oct);const h=new Float32Array(n*n);let min=1e9,max=-1e9;
+ let sp=[];if(state.mode==='mountain'||state.mode==='mountainRiver'){const r=new Rng(state.seed);for(let i=0;i<state.belts;i++){const p=spine(r);sp.push(p);if(r.next()<state.branch)sp.push(branch(p,r))}}
+ const sx0=Math.min(state.sampleXMin,state.sampleXMax),sx1=Math.max(state.sampleXMin,state.sampleXMax),sy0=Math.min(state.sampleYMin,state.sampleYMax),sy1=Math.max(state.sampleYMin,state.sampleYMax);
+ // Cave/Ravines are volumetric. Render the actual iso-surface instead of collapsing them into a heightfield.
+ if(state.mode==='cave'||state.mode==='ravines'){
+   const z0=state.mode==='cave'?-320:-120,z1=state.mode==='cave'?520:80;
+   const vm=buildVolumeMesh(state.mode,state.volRes,sx0,sx1,sy0,sy1,z0,z1,noise,token);if(token!==buildToken){vm.geometry.dispose();return;}
+   disposeTerrain();terrainRoot=vm.group;scene.add(terrainRoot);
+   const spanX=(sx1-sx0)*voxel,spanY=(sy1-sy0)*voxel,spanZ=(z1-z0)*voxel;
+   camera.position.set(Math.max(spanX,spanY)*.42,Math.max(450,spanZ*.45),Math.max(spanX,spanY)*.52);camera.near=.1;camera.far=Math.max(30000,Math.max(spanX,spanY,spanZ)*8);camera.updateProjectionMatrix();orbit.target.set(0,(z0+z1)*voxel*.05,0);orbit.minDistance=Math.max(40,Math.max(spanX,spanY)*.08);orbit.maxDistance=Math.max(10000,Math.max(spanX,spanY)*6);orbit.update();
+   // Keep the 2D map meaningful: it shows the highest zero-crossing of the same density field.
+   for(let j=0;j<n;j++){const vj=j/(n-1),yv=sy0+(sy1-sy0)*vj;for(let i=0;i<n;i++){const vi=i/(n-1),xv=sx0+(sx1-sx0)*vi;const z=surfaceFromDensity(state.mode,xv,yv,noise);const hh=z*voxel*state.vert;h[j*n+i]=hh;min=Math.min(min,hh);max=Math.max(max,hh);}}
+   drawMap(h,n,min,max);el('hud').innerHTML=`<span class="badge">${state.mode}</span><span class="ok">3D SDF</span><br>World: ${worldX.toFixed(0)} × ${worldY.toFixed(0)} m · Voxel: ${voxel.toFixed(1)} m<br>Sample X: ${sx0.toFixed(1)} … ${sx1.toFixed(1)} · Y: ${sy0.toFixed(1)} … ${sy1.toFixed(1)} voxel<br>Volume: ${state.volRes}³ · z=${z0} … ${z1} voxel · ${vm.vertices.toLocaleString()} vertices · ${(performance.now()-t).toFixed(0)} ms<br><span class="legend">现在使用真实 Marching Tetrahedra 提取 z=0 等值面，因此 Cave 的地下空腔/悬空面可以显示；Ravines 也按 3D density 而不是高度场显示。</span>`;
+   return;
+ }
+ for(let j=0;j<n;j++){const vj=j/(n-1);const yV=sy0+(sy1-sy0)*vj;for(let i=0;i<n;i++){const vi=i/(n-1);const xV=sx0+(sx1-sx0)*vi;const xMeters=(vi-.5)*worldX;const yMeters=(vj-.5)*worldY;let H=0;if(state.mode==='mountain'||state.mode==='mountainRiver'){const X=xMeters/worldX*2,Y=yMeters/worldY*2;H=mountainHeight(X,Y,noise,sp)*state.vert;if(state.mode==='mountainRiver')H=riverCarve(H,X,Y,noise)}else if(state.mode==='cliffs'){const zV=cliffsSurfaceHeight(xV,yV,noise);H=zV*voxel*state.vert}else{let z=state.mode==='dunes'?-100:0;H=exampleHeight(state.mode,xV,yV,z,noise)*voxel*state.vert}h[j*n+i]=H;min=Math.min(min,H);max=Math.max(max,H)}}
+ disposeTerrain(); geo=new THREE.PlaneGeometry(worldX,worldY,n-1,n-1);geo.rotateX(-Math.PI/2);const p=geo.attributes.position;const cols=new Float32Array(p.count*3);for(let i=0;i<p.count;i++){p.setY(i,h[i]);const c=new THREE.Color(colorH((h[i]-min)/(max-min||1)));cols[i*3]=c.r;cols[i*3+1]=c.g;cols[i*3+2]=c.b}p.needsUpdate=true;geo.setAttribute('color',new THREE.BufferAttribute(cols,3));geo.computeVertexNormals();const mat=new THREE.MeshStandardMaterial({roughness:.92,metalness:0,vertexColors:true,side:THREE.DoubleSide,wireframe:el('wire').checked});mesh=new THREE.Mesh(geo,mat);terrainRoot=mesh;scene.add(mesh);const span=Math.max(1,max-min);camera.position.set(worldX*.32,Math.max(350,span*1.15),worldY*.38);camera.near=.1;camera.far=Math.max(30000,Math.max(worldX,worldY)*8);camera.updateProjectionMatrix();orbit.target.set(0,(min+max)*.15,0);orbit.minDistance=Math.max(40,Math.max(worldX,worldY)*.08);orbit.maxDistance=Math.max(10000,Math.max(worldX,worldY)*6);orbit.update();drawMap(h,n,min,max);el('hud').innerHTML=`<span class="badge">${state.mode}</span><span class="ok">OK</span><br>World: ${worldX.toFixed(0)} × ${worldY.toFixed(0)} m · Voxel: ${voxel.toFixed(1)} m<br>Sample X: ${sx0.toFixed(1)} … ${sx1.toFixed(1)} · Y: ${sy0.toFixed(1)} … ${sy1.toFixed(1)} voxel<br>H: ${min.toFixed(1)} … ${max.toFixed(1)} m · ${n}² samples · ${(performance.now()-t).toFixed(0)} ms`}
+function generate(){const token=++buildToken;disposeTerrain();setTimeout(()=>build(token),0)}
+function resize(){const w=el('view').clientWidth,h=el('view').clientHeight;camera.aspect=w/h;camera.updateProjectionMatrix();renderer.setSize(w,h)}window.addEventListener('resize',resize);resize();
+el('wire').onchange=()=>{if(terrainRoot)terrainRoot.traverse(o=>{if(o.material)o.material.wireframe=el('wire').checked})};el('heat').onchange=generate;
+function updateVisibility(){const b=state.mode==='mountain'||state.mode==='mountainRiver';const v=state.mode==='cave'||state.mode==='ravines';el('voxelParams').style.opacity=b?'0.55':'1';el('beltParams').style.opacity=b?'1':'.55';el('volRes').style.display=v?'block':'none';el('volResLabel').style.display=v?'flex':'none';el('duneParams').style.display=state.mode==='dunes'?'block':'none'}state.mode=el('mode').value;updateVisibility();generate();
+function tick(){requestAnimationFrame(tick);orbit.update();renderer.render(scene,camera)}tick();
+</script></body></html>

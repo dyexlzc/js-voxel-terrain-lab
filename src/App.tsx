@@ -1,14 +1,12 @@
 import { useState } from "react";
 import TerrainLab from "./components/TerrainLab";
 import CaveLab from "./components/CaveLab";
-import CaveLabV2 from "./components/CaveLabV2";
 
-type Tab = "terrain" | "cave" | "cave2";
+type Tab = "terrain" | "cave";
 
 const TABS: { id: Tab; label: string; sub: string }[] = [
   { id: "terrain", label: "Terrain Lab", sub: "Noise Router 主地形（平原/高原/山脉/大湖）" },
   { id: "cave", label: "Cave Lab", sub: "3D SDF → Marching Tetrahedra（VoxelPlugin Cave）" },
-  { id: "cave2", label: "Cave Lab V2 · GPT", sub: "ChatGPT 修复 Cliffs + 远距渲染（扩展上限）" },
 ];
 
 export default function App() {
@@ -46,7 +44,7 @@ export default function App() {
       </nav>
 
       <div className="min-h-0 flex-1">
-        {tab === "terrain" ? <TerrainLab /> : tab === "cave" ? <CaveLab /> : <CaveLabV2 />}
+        {tab === "terrain" ? <TerrainLab /> : <CaveLab />}
       </div>
     </div>
   );
