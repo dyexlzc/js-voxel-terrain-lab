@@ -43,7 +43,7 @@ const DEFAULTS: CaveParams = {
   mode: "cliffs",
   seed: 1337,
   freq: 1,
-  N: 56,
+  N: 72,
   half: 250,
   voxel: 5,
   wireframe: false,
@@ -249,14 +249,16 @@ export default function CaveLab() {
         const geo = new THREE.BufferGeometry();
         geo.setAttribute("position", new THREE.BufferAttribute(res.positions, 3));
         geo.setAttribute("normal", new THREE.BufferAttribute(res.normals, 3));
+        // vertex color 走线性空间 → sRGB 输出；ramp 数值除以 255 归一化
+        // 并整体提亮（×1.2 上限 1.0），让薄壳表面（Cliffs）也能看清
         const colors = new Float32Array(res.positions.length);
         for (let i = 0; i < res.vertices; i++) {
           const zVox = res.positions[i * 3 + 1]; // Three Y = Voxel Z（未缩放）
           const t = clamp((zVox - z0) / (z1 - z0 || 1), 0, 1);
           const c = heightColor(t);
-          colors[i * 3] = c[0];
-          colors[i * 3 + 1] = c[1];
-          colors[i * 3 + 2] = c[2];
+          colors[i * 3]     = Math.min(1, (c[0] / 255) * 1.2);
+          colors[i * 3 + 1] = Math.min(1, (c[1] / 255) * 1.2);
+          colors[i * 3 + 2] = Math.min(1, (c[2] / 255) * 1.2);
         }
         geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
         geo.setIndex(new THREE.BufferAttribute(res.indices, 1));
@@ -267,7 +269,7 @@ export default function CaveLab() {
           scene.remove(meshRef.current);
         }
         const mat = new THREE.MeshStandardMaterial({
-          roughness: 0.95,
+          roughness: 0.78,
           metalness: 0,
           vertexColors: true,
           side: THREE.DoubleSide, // 洞穴内壁 = 从空气侧看 Solid 的背面
@@ -326,19 +328,30 @@ export default function CaveLab() {
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.15;
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x95aab9);
-    scene.fog = new THREE.FogExp2(0x95aab9, 0.00035);
+    // 背景用偏深的暖灰，与雾色不同；地形着色不被"吞色"
+    scene.background = new THREE.Color(0x2a313a);
+    // 雾：仅作远景空气感，密度从 0.00035 → 0.00006（2000m 处 1.4% 雾化，
+    // 不再吞掉 vertex color；同时保留"远处偏冷"的纵深感）
+    scene.fog = new THREE.FogExp2(0x4a5a6a, 0.00006);
     const camera = new THREE.PerspectiveCamera(55, wrap.clientWidth / Math.max(1, wrap.clientHeight), 0.1, 30000);
     camera.position.set(900, 700, 1100);
     const controls = new OrbitControls(camera, canvas);
     controls.enableDamping = true;
     controls.maxPolarAngle = Math.PI * 0.49;
 
-    const sun = new THREE.DirectionalLight(0xffffff, 2.4);
+    // 三点光：主光（暖白） + 背光（冷蓝） + 半球光（天地） + 弱环境
+    const sun = new THREE.DirectionalLight(0xfff2dd, 2.8);
     sun.position.set(-900, 1600, 700);
     scene.add(sun);
-    scene.add(new THREE.HemisphereLight(0xdaf0ff, 0x3b413d, 1.6));
+    const fill = new THREE.DirectionalLight(0x88a8d8, 1.0);
+    fill.position.set(800, 600, -400);
+    scene.add(fill);
+    scene.add(new THREE.HemisphereLight(0xc8d8e8, 0x4a3a30, 1.4));
+    scene.add(new THREE.AmbientLight(0xffffff, 0.35));
 
     rendererRef.current = renderer;
     sceneRef.current = scene;

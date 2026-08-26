@@ -429,7 +429,7 @@ export interface ModeSpec {
 export const MODE_SPECS: ModeSpec[] = [
   {
     id: "cliffs", n: 1, short: "Cliffs", title: "1 · VoxelExample_Cliffs（台地悬崖）",
-    zRange: [-60, 130], isVolumetric: false,
+    zRange: [-30, 110], isVolumetric: false,
     formula:
       `base  = FBM2(X, Y, 0.005·f, 3)\nsides = Perlin2(X·0.1·f, Y·0.1·f, off=1)\np     = clamp((Z/50 + 0.2·sides)·10, 0, 1)\ntop   = IQ2(X, Y, 0.01·f, 15)·25\nh     = 50·p + lerp(0, top, p)\nvalue = h - Z  (薄壳 SDF)`,
   },
