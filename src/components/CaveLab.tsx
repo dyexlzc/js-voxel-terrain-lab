@@ -2,13 +2,23 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { VoxelNoise } from "../terrain/voxelNoise";
-import { caveColumn, caveDensity, ravinesDensity, clamp, type CaveColumn } from "../terrain/voxelExamples";
+import {
+  exampleDensity,
+  caveColumn,
+  caveDensity,
+  MODE_BY_ID,
+  MODE_SPECS,
+  type ExampleMode,
+  type DunesParams,
+  type RegionParams,
+} from "../terrain/voxelExamples";
+import { clamp } from "../terrain/voxelExamples";
 import { marchTetrahedra, sampleVolume, type VolumeBounds } from "../terrain/marching";
 
 /* ---------------- 参数 ---------------- */
 
 interface CaveParams {
-  mode: "cave" | "ravines";
+  mode: ExampleMode;
   seed: number;
   /** 频率缩放（乘到示例公式的固定频率上） */
   freq: number;
@@ -19,21 +29,33 @@ interface CaveParams {
   /** 每体素米数（仅显示缩放，不参与密度计算） */
   voxel: number;
   wireframe: boolean;
+  /** Dunes 风向量（X 方向） */
+  windX: number;
+  /** Dunes 风向量（Y 方向） */
+  windY: number;
+  /** 区域尺度（Hybrid 13 用） */
+  regionScale: number;
+  /** 区域门槛 */
+  regionThreshold: number;
 }
 
 const DEFAULTS: CaveParams = {
-  mode: "cave",
+  mode: "cliffs",
   seed: 1337,
   freq: 1,
   N: 56,
   half: 250,
   voxel: 5,
   wireframe: false,
+  windX: 1,
+  windY: 0,
+  regionScale: 0.0006,
+  regionThreshold: 0.35,
 };
 
-/** Z 采样范围（体素单位，按示例公式的有效值域设定） */
-function zRange(mode: "cave" | "ravines"): [number, number] {
-  return mode === "cave" ? [-320, 520] : [-120, 80];
+/** 按模式查 Z 范围（见 MODE_BY_ID[id].zRange） */
+function zRange(mode: ExampleMode): [number, number] {
+  return MODE_BY_ID[mode].zRange;
 }
 
 /* ---------------- 小型 UI 构件（与 TerrainLab 同风格） ---------------- */
@@ -87,13 +109,6 @@ function Check({ label, checked, onChange }: { label: string; checked: boolean; 
 
 interface Status { text: string; ms: number; error: boolean }
 
-const FORMULA_NOTE: Record<"cave" | "ravines", string> = {
-  cave:
-    "top = FBM2(X,Y,0.005,3)×150 ; bot = FBM2(X+391,Y-71,0.008,3)×150\ntube = 400-|XY| ; band = SUnion(top-Z, Z-bot, 25)+50\nglobal = IQ2(X,Y,0.005,15)×200+150\nvalue = SInter(Z-global, SUnion(tube, band, 100), 15)",
-  ravines:
-    "p = Perlin3(X·0.02, Y·0.02, Z·0.02, oct=1)\ntop = SInter(Z, 5p, 5)\nvalue = SUnion(Z+50, top, 5)",
-};
-
 export default function CaveLab() {
   const [params, setParams] = useState<CaveParams>(DEFAULTS);
   const [busy, setBusy] = useState(false);
@@ -116,6 +131,14 @@ export default function CaveLab() {
 
   const set = <K extends keyof CaveParams>(k: K, v: CaveParams[K]) => setParams((p) => ({ ...p, [k]: v }));
 
+  const spec = MODE_BY_ID[params.mode];
+  const dunes: DunesParams = { windX: params.windX, windY: params.windY };
+  const region: RegionParams = {
+    regionScale: params.regionScale,
+    regionThreshold: params.regionThreshold,
+    sDune: 1, sCliff: 1, sRavine: 1, sErosion: 1, sIQ: 1,
+  };
+
   /* ---------- 密度剖面（X-Z 切片，Y=0） ---------- */
   const buildCrossSection = (P: CaveParams, noise: VoxelNoise) => {
     const canvas = crossRef.current;
@@ -125,27 +148,50 @@ export default function CaveLab() {
     const H = canvas.height;
     const [z0, z1] = zRange(P.mode);
     const img = ctx.createImageData(W, H);
-    // X 列缓存：cave 的列场只依赖 X（切片 Y=0）
+    // 高度场示例可缓存 h(x, 0)；体示例逐 (x, z) 重算
+    const isHeightField = !spec.isVolumetric;
     const nx = 256;
-    const cols: (CaveColumn | null)[] = [];
-    for (let i = 0; i < nx; i++) {
-      const x = -P.half + (2 * P.half * i) / (nx - 1);
-      cols.push(P.mode === "cave" ? caveColumn(noise, x, 0, P.freq) : null);
+    const heights = isHeightField ? new Float32Array(nx) : null;
+    let colAt: ((x: number) => ReturnType<typeof caveColumn>) | null = null;
+    if (heights) {
+      for (let i = 0; i < nx; i++) {
+        const x = -P.half + (2 * P.half * i) / (nx - 1);
+        // 高度场：h(x, 0)（参考 z=0 处的「地表」高度；用 exampleDensity 的最大深度探测）
+        // 直接求 density(x, 0, z) = 0 的 z（0~z1 范围内上界）
+        let lo = z0, hi = z1, dLo = exampleDensity(P.mode, noise, x, 0, lo, P.freq, { seed: P.seed, dunes, region });
+        for (let it = 0; it < 22; it++) {
+          const m = (lo + hi) * 0.5;
+          const dM = exampleDensity(P.mode, noise, x, 0, m, P.freq, { seed: P.seed, dunes, region });
+          if ((dLo >= 0 && dM >= 0) || (dLo <= 0 && dM <= 0)) { lo = m; dLo = dM; }
+          else hi = m;
+        }
+        heights[i] = (lo + hi) * 0.5;
+      }
+    } else {
+      // 体示例（Cave）：列缓存
+      const cols: ReturnType<typeof caveColumn>[] = [];
+      for (let i = 0; i < nx; i++) {
+        const x = -P.half + (2 * P.half * i) / (nx - 1);
+        cols.push(P.mode === "cave" ? caveColumn(noise, x, 0, P.freq) : null as unknown as ReturnType<typeof caveColumn>);
+      }
+      colAt = (x: number) => {
+        const t = ((x + P.half) / (2 * P.half)) * (nx - 1);
+        const i = clamp(Math.round(t), 0, nx - 1);
+        return cols[i];
+      };
     }
-    const colAt = (x: number) => {
-      const t = ((x + P.half) / (2 * P.half)) * (nx - 1);
-      const i = clamp(Math.round(t), 0, nx - 1);
-      return cols[i];
-    };
     for (let py = 0; py < H; py++) {
       const z = z1 - ((z1 - z0) * py) / (H - 1); // 顶部 = 高 Z
       for (let px = 0; px < W; px++) {
         const x = -P.half + (2 * P.half * px) / (W - 1);
         let d: number;
-        if (P.mode === "cave") {
-          d = caveDensity(z, colAt(x)!);
+        if (heights) {
+          // 高度场：density = heights - z  （列内线性插值）
+          const t = ((x + P.half) / (2 * P.half)) * (nx - 1);
+          const i = clamp(Math.round(t), 0, nx - 1);
+          d = heights[i] - z;
         } else {
-          d = ravinesDensity(noise, x, 0, z, P.freq);
+          d = caveDensity(z, colAt!(x)!);
         }
         // 发散配色：实体=暖岩色，空气=冷暗色，|d|<3 画等值线
         let r: number, g: number, b: number;
@@ -190,7 +236,10 @@ export default function CaveLab() {
 
         buildCrossSection(P, noise);
 
-        const grid = await sampleVolume(noise, P.mode, bounds, P.N, P.freq, tokenObj, (p) => setProgress(p));
+        const grid = await sampleVolume(
+          noise, P.mode, bounds, P.N, P.freq, tokenObj, (p) => setProgress(p),
+          { seed: P.seed, dunes, region }
+        );
         if (tokenObj.cancelled || !grid) return;
 
         const res = marchTetrahedra(grid);
@@ -252,7 +301,7 @@ export default function CaveLab() {
           error: false,
           ms,
           text:
-            `Mode: ${P.mode} | Seed: ${P.seed} | Freq: ${P.freq.toFixed(2)}\n` +
+            `Mode ${spec.n}: ${spec.short} | Seed: ${P.seed} | Freq: ${P.freq.toFixed(2)} | ${spec.isVolumetric ? "3D SDF" : "Thin-shell SDF"}\n` +
             `Volume: ${P.N}³ = ${(P.N ** 3).toLocaleString()} samples | Box: ${2 * P.half}×${2 * P.half}×${z1 - z0} voxel\n` +
             `Mesh: ${res.vertices.toLocaleString()} verts | ${res.triangles.toLocaleString()} tris\n` +
             `耗时 ${ms}ms | 梯度法线（有限差分）| Voxel(X,Y,Z)→Three(X,Z,-Y)`,
@@ -358,11 +407,14 @@ export default function CaveLab() {
               <span className="text-[13px] font-semibold text-mute">3D SDF → Marching Tetrahedra</span>
             </h1>
             <p className="truncate text-[11px] text-mute">
-              VoxelPlugin 式体积密度：density=0 等值面（非高度场，支持悬空面/洞穴内壁）
+              13 个体密度算法：VoxelExample 1~7 + 6 个 Hybrid（TerrainLab 区域合成 SDF 化）
             </p>
           </div>
         </div>
         <div className="hidden shrink-0 items-center gap-2 lg:flex">
+          <span className="rounded-md border border-line bg-card px-2.5 py-1 font-mono text-[10px] text-mute">
+            MODE <b className="text-[11px] text-amber tabular-nums">{spec.n}·{spec.short}</b>
+          </span>
           <span className="rounded-md border border-line bg-card px-2.5 py-1 font-mono text-[10px] text-mute">
             SEED <b className="text-[11px] text-amber tabular-nums">{params.seed}</b>
           </span>
@@ -385,36 +437,67 @@ export default function CaveLab() {
         <aside className="lab-scroll w-[380px] shrink-0 overflow-y-auto border-r border-line bg-panel px-4 py-4">
           <Group
             n="1"
-            title="体积示例（VoxelPlugin Density）"
-            note="Cave/Ravines 是体积 SDF：一个 (X,Y) 列可有多个零交叉（地表/洞顶/洞底），必须用等值面提取而非高度场。坐标语义 X/Y 水平、Z 高度，输出时才转 Three(X,Z,-Y)。"
+            title="体积示例（VoxelPlugin Density · 1~7 + Hybrid 8~13）"
+            note="13 个体密度算法：前 7 个是 mountain_terrain_demo (2).html 的 1~7 原版示例；后 6 个 Hybrid 是把 TerrainLab model.ts 探索过的 5 区域合成逻辑 + 1~7 算子改写成单一 SDF 公式。所有模式共享 Marching Tetrahedra 管线。"
           >
             <label className="mb-1 block text-[11px] text-mute">Mode</label>
             <select
               value={params.mode}
-              onChange={(e) => set("mode", e.target.value as "cave" | "ravines")}
+              onChange={(e) => set("mode", e.target.value as ExampleMode)}
               className="mb-2.5 w-full rounded-md border border-edge bg-ink px-2.5 py-1.5 font-mono text-[12px] text-paper outline-none focus:border-amber"
             >
-              <option value="cave">VoxelExample_Cave（洞穴）</option>
-              <option value="ravines">VoxelExample_Ravines（峡谷）</option>
+              <optgroup label="── VoxelExample 原版 1~7 ──">
+                {MODE_SPECS.filter((s) => s.n <= 7).map((s) => (
+                  <option key={s.id} value={s.id}>{s.title}</option>
+                ))}
+              </optgroup>
+              <optgroup label="── Hybrid 8~13（TerrainLab 改写） ──">
+                {MODE_SPECS.filter((s) => s.n > 7).map((s) => (
+                  <option key={s.id} value={s.id}>{s.title}</option>
+                ))}
+              </optgroup>
             </select>
             <pre className="rounded-md border border-line bg-ink px-2.5 py-2 font-mono text-[10px] leading-relaxed text-warn whitespace-pre-wrap">
-              {FORMULA_NOTE[params.mode]}
+              {spec.formula}
             </pre>
           </Group>
 
           <Group
             n="2"
             title="采样体积"
-            note="有限体素盒内规则采样 D[ix,iy,iz]，密度=0 的等值面用 Marching Tetrahedra 提取（每 cube 拆 6 四面体，边插值 t=d0/(d0-d1)）。Cave 列缓存把噪声求值从 N³ 降到 N²。"
+            note="有限体素盒内规则采样 D[ix,iy,iz]，density=0 等值面用 Marching Tetrahedra 提取（每 cube 拆 6 四面体，边插值 t=d0/(d0-d1)）。Cave 走列缓存（top/bot/tube/global 只依赖 X,Y，N³→N²）；其余模式逐体素评估。"
           >
             <Slider label="体分辨率 N（每轴）" value={params.N} min={24} max={112} step={4} decimals={0} onChange={(v) => set("N", v)} />
             <Slider label="XY 半尺寸 (voxel)" value={params.half} min={100} max={600} step={10} decimals={0} onChange={(v) => set("half", v)} />
             <Slider label="频率缩放 Freq" value={params.freq} min={0.2} max={3} step={0.05} decimals={2} onChange={(v) => set("freq", v)} />
             <div className="mb-2 rounded-md border border-line bg-ink px-2.5 py-1.5 font-mono text-[10.5px] text-mute">
-              Z 范围（固定）：{zRange(params.mode)[0]} … {zRange(params.mode)[1]} voxel
+              Z 范围（{spec.short}）：{zRange(params.mode)[0]} … {zRange(params.mode)[1]} voxel
+              {" "}<span className="text-mute/60">· {spec.isVolumetric ? "体 SDF" : "薄壳 h-Z"}</span>
             </div>
             <Slider label="体素尺寸 (m/voxel，仅显示)" value={params.voxel} min={1} max={10} step={0.5} decimals={1} onChange={(v) => set("voxel", v)} />
           </Group>
+
+          {spec.needsDunes && (
+            <Group
+              n="2.5"
+              title="Dunes 风向量（2 / 8 / 13 模式用）"
+              note="沙丘脊线近似垂直于风向 (dx, dy)。Hybrid 8/13 内部用 dunesHeight 算子。"
+            >
+              <Slider label="Wind X" value={params.windX} min={-1} max={1} step={0.05} decimals={2} onChange={(v) => set("windX", v)} />
+              <Slider label="Wind Y" value={params.windY} min={-1} max={1} step={0.05} decimals={2} onChange={(v) => set("windY", v)} />
+            </Group>
+          )}
+
+          {params.mode === "region_driven" && (
+            <Group
+              n="2.6"
+              title="区域参数（Hybrid 13 用）"
+              note="5 个 fbm2 低频连续噪声场 smoothstep 出来的区域掩码。regionScale 决定区域颗粒大小，regionThreshold 控制区域覆盖比例。"
+            >
+              <Slider label="区域尺度 Region Scale" value={params.regionScale} min={0.0001} max={0.005} step={0.0001} decimals={4} onChange={(v) => set("regionScale", v)} />
+              <Slider label="区域门槛 Region Threshold" value={params.regionThreshold} min={0.1} max={0.55} step={0.01} decimals={2} onChange={(v) => set("regionThreshold", v)} />
+            </Group>
+          )}
 
           <Group n="3" title="渲染">
             <Check label="线框模式（Wireframe）" checked={params.wireframe} onChange={(v) => set("wireframe", v)} />
@@ -468,7 +551,7 @@ export default function CaveLab() {
           <div ref={wrapRef} className="relative min-h-0 flex-1 bg-[#95aab9]">
             <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
             <div className="pointer-events-none absolute top-3 left-3 z-10 rounded bg-black/55 px-2.5 py-1 font-mono text-[11px] tracking-wider text-white">
-              3D ISOSURFACE — DENSITY = 0 (MARCHING TETRAHEDRA)
+              3D ISOSURFACE — DENSITY = 0 (MARCHING TETRAHEDRA) · {spec.short}
             </div>
             <div className="pointer-events-none absolute bottom-3 left-3 z-10 rounded bg-black/45 px-2.5 py-1 font-mono text-[10px] text-white/85">
               拖拽旋转 · 滚轮缩放 · 右键平移 · 法线 = ∇density（有限差分）

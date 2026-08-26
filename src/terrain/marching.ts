@@ -4,7 +4,7 @@
  * 流水线：
  *   3D Density 场（体素坐标 X/Y 水平、Z 高度）
  *     → 有限体素盒内规则采样 D[ix,iy,iz]
- *     → 提取 density = 0 等值面（每 cube 拆 6 个四面体）
+ *     → 提取 density = 0 等值面（每 cube 拆 6 四面体）
  *     → 边上线性插值求交点 t = d0/(d0-d1)
  *     → 梯度法线（有限差分，比几何法线更平滑、更贴 SDF 语义）
  *     → 仅在输出阶段做 Voxel→Three 坐标转换 (X, Z, -Y)
@@ -12,13 +12,25 @@
  * 为什么不用 HeightField：一个 (X,Y) 列可能包含多个零交叉
  * （山体表面 / 洞穴顶 / 洞穴底），只有 3D 等值面能表达悬空面与空腔。
  *
+ * 本版本支持 13 个密度模式（见 ExampleMode）：
+ *   1~7  VoxelExample 原始示例（Cave/Ravines 走列缓存，其余逐点评估）
+ *   8~13 Hybrid（区域 + 多算子混合）
+ *
  * UE5 移植：对应 VoxelPlugin 的 MarchingCubes 管线。四面体法无需 256 项
  * LUT（原型阶段更不易出错）；移植 C++ 时可换标准 Marching Cubes LUT，
  * 密度场与插值公式完全不变。四面体分解绕体对角线 0-6 切 6 刀，
  * 与 Marching Cubes 顶点位置在 cube 面上逐边一致（共边网格无缝）。
  */
 
-import { caveColumn, caveDensity, ravinesDensity, type CaveColumn } from "./voxelExamples";
+import {
+  caveColumn,
+  caveDensity,
+  exampleDensity,
+  type CaveColumn,
+  type ExampleMode,
+  type DunesParams,
+  type RegionParams,
+} from "./voxelExamples";
 import type { VoxelNoise } from "./voxelNoise";
 
 /** 体素盒边界（体素坐标：X/Y 水平，Z 高度） */
@@ -57,8 +69,6 @@ const TETRAS = [
 // inside/outside 配对现场推导，不依赖此排列
 const TET_EDGES = [[0, 1], [1, 2], [2, 0], [0, 3], [1, 3], [2, 3]];
 
-export type VolumeMode = "cave" | "ravines";
-
 export interface MarchResult {
   /** Three.js 坐标（已从 Voxel (X,Y,Z) 转换为 (X, Z, -Y)） */
   positions: Float32Array;
@@ -69,22 +79,33 @@ export interface MarchResult {
   vertices: number;
 }
 
+/** sampleVolume 可选参数（Hybrid 模式用到） */
+export interface SampleOptions {
+  seed?: number;
+  dunes?: DunesParams;
+  region?: RegionParams;
+}
+
 /**
- * 体采样（带 Cave 列缓存，逐 k 切片异步让帧）。
+ * 体采样（仅 cave 走列缓存，其余逐体素评估）。
  *
  * 列缓存原理：caveColumn 的 top/bot/tube/global 只依赖 (X,Y)——
  * 先按 N² 列一次算齐，随后每个体素的密度只需 3 次 CSG 运算，
  * 噪声求值次数从 N³ 降到 N²（N=64 时约 64 倍加速）。
- * ravines 的密度是真 3D（Perlin3 含 Z），无列缓存。
+ *
+ * 其它模式（高度场/混合）每体素调用 exampleDensity，无列缓存加速。
+ * 注意：高度场示例的 density = h(X,Y) - Z 沿 Z 是线性的，
+ * 有限差分梯度能精确反映 h 的 ∇，所以仍可生成正确法线。
  */
 export async function sampleVolume(
   noise: VoxelNoise,
-  mode: VolumeMode,
+  mode: ExampleMode,
   bounds: VolumeBounds,
   N: number,
   freq: number,
   token: { cancelled: boolean },
-  onProgress: (p: number) => void
+  onProgress: (p: number) => void,
+  opts: SampleOptions = {}
 ): Promise<VolumeGrid | null> {
   const vals = new Float32Array(N * N * N);
   const cols = mode === "cave" ? new Float64Array(N * N * 4) : null;
@@ -125,7 +146,7 @@ export async function sampleVolume(
           col.global = cols[ci + 3];
           vals[gridId(N, i, j, k)] = caveDensity(z, col);
         } else {
-          vals[gridId(N, i, j, k)] = ravinesDensity(noise, x, y, z, freq);
+          vals[gridId(N, i, j, k)] = exampleDensity(mode, noise, x, y, z, freq, opts);
         }
       }
     }
