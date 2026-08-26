@@ -45,6 +45,7 @@ console.log(`\n-- worst cliff: seed ${worstSeed} at (${worstX.toFixed(0)}, ${wor
     const r = sm.regions;
     console.log(
       "x", sx.toFixed(0), "h", sm.h.toFixed(1), "mm", sm.mountainMask.toFixed(2),
+      "pm", sm.plateauMask.toFixed(2), "clim", sm.climateErosion.toFixed(2),
       "river", sm.riverMask.toFixed(2),
       "dune", r.duneMask.toFixed(2), "cliff", r.cliffMask.toFixed(2),
       "rav", r.ravMask.toFixed(2), "ero", r.eroMask.toFixed(2), "iq", r.iqMask.toFixed(2)
@@ -59,11 +60,14 @@ const N = 240;
 const span = P.sampleXMax - P.sampleXMin;
 const step = span / (N - 1);
 const grid = new Float64Array(N * N);
+const pmGrid = new Float64Array(N * N);
 for (let i = 0; i < N; i++) {
   for (let j = 0; j < N; j++) {
     const sx = P.sampleXMin + span * (i / (N - 1));
     const sy = P.sampleYMin + span * (j / (N - 1));
-    grid[i * N + j] = model.sampleSurface(sx, sy).h;
+    const sm = model.sampleSurface(sx, sy);
+    grid[i * N + j] = sm.h;
+    pmGrid[i * N + j] = sm.plateauMask;
   }
 }
 
@@ -140,6 +144,27 @@ let deep = 0;
 for (const h of grid) if (h < -M * 0.1) deep++;
 console.log("deep water(<-0.1M)%:", (deep / t * 100).toFixed(1), "| deepest:", sorted[0].toFixed(1));
 
+/* 5.5 高原：覆盖率 + 内部平坦度（高原核心区相邻高差应远小于全图均值） */
+let platCnt = 0, platSlopeSum = 0, platSlopeN = 0, platMax = 0, platMin = 1e9;
+for (let i = 0; i < N; i++)
+  for (let j = 0; j < N; j++) {
+    const pmv = pmGrid[i * N + j];
+    if (pmv > 0.55) {
+      platCnt++;
+      if (grid[i * N + j] > platMax) platMax = grid[i * N + j];
+      if (grid[i * N + j] < platMin) platMin = grid[i * N + j];
+      if (j < N - 1 && pmGrid[i * N + j + 1] > 0.55) {
+        platSlopeSum += Math.abs(grid[i * N + j] - grid[i * N + j + 1]);
+        platSlopeN++;
+      }
+    }
+  }
+console.log(
+  "plateau(pm>0.55)%:", (platCnt / t * 100).toFixed(1),
+  "| plateau flatness mean|dh| =", platSlopeN ? (platSlopeSum / platSlopeN).toFixed(2) : "n/a", "m",
+  "| plateau h range:", platCnt ? `${platMin.toFixed(0)}~${platMax.toFixed(0)}m` : "n/a"
+);
+
 /* 6. 平滑度：相邻采样点最大高差 */
 let maxDelta = 0, sumDelta = 0, mi = 0, mj = 0;
 for (let i = 0; i < N; i++)
@@ -162,6 +187,8 @@ for (let s = -6; s <= 6; s++) {
     "y", sy.toFixed(0),
     "h", sm.h.toFixed(1),
     "mm", sm.mountainMask.toFixed(2),
+    "pm", sm.plateauMask.toFixed(2),
+    "clim", sm.climateErosion.toFixed(2),
     "river", sm.riverMask.toFixed(2),
     "dune", r.duneMask.toFixed(2),
     "cliff", r.cliffMask.toFixed(2),

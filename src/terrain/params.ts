@@ -24,6 +24,23 @@ export interface TerrainParams {
   massifRegion: number;
   /** 区域山峰密度（0~1）：多少比例的区域真正隆起为山脉，其余成为成片平原 */
   massifDensity: number;
+  /**
+   * 平原化强度（0~1）：强侵蚀气候带内，地形起伏向平原基底压缩的比例。
+   * 0 = 不压缩（起伏保留），1 = 最大压缩（90% 起伏被移除）。Minecraft 1.18
+   * 的 erosion 参数等价物，作用于大尺度气候带而非单个山脉区域。
+   */
+  plainStrength: number;
+  /**
+   * 高原强度（0~1）：中等侵蚀气候带内，山体/平原被抬升并削平为台地的比例。
+   * 0 = 无高原，1 = 高原带内完全台地化（内部绝对平坦，仅边缘有阶梯）。
+   */
+  plateauStrength: number;
+  /**
+   * 高原抬升（相对 Max Mountain，0~0.4）：高原面相对平原基底的平均抬升量。
+   * 高原面高程 = M × (0.05 + plateauLift × [0.55, 1.05] 区域随机)，
+   * 例：M=720、lift=0.15 → 高原面约 95~120m。
+   */
+  plateauLift: number;
   warp: number;
   mountainErosion: number;
   riverStrength: number;
@@ -61,6 +78,9 @@ export const DEFAULT_PARAMS: TerrainParams = {
   maxMountain: 720,
   massifRegion: 1600,
   massifDensity: 0.72,
+  plainStrength: 0.8,
+  plateauStrength: 0.75,
+  plateauLift: 0.15,
   warp: 1.25,
   mountainErosion: 0.95,
   riverStrength: 0.95,
@@ -117,6 +137,9 @@ export function clampParams(raw: TerrainParams): TerrainParams {
     maxMountain: clamp(raw.maxMountain, 1, 100000),
     massifRegion: clamp(raw.massifRegion, 300, 50000),
     massifDensity: clamp(raw.massifDensity, 0.05, 1),
+    plainStrength: clamp(raw.plainStrength, 0, 1),
+    plateauStrength: clamp(raw.plateauStrength, 0, 1),
+    plateauLift: clamp(raw.plateauLift, 0, 0.4),
     warp: clamp(raw.warp, 0, 6),
     mountainErosion: clamp(raw.mountainErosion, 0, 1.5),
     riverStrength: clamp(raw.riverStrength, 0, 3),

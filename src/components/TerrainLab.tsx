@@ -764,12 +764,15 @@ export default function TerrainLab() {
 
           <Group
             n="5"
-            title="山脉层级合成"
-            note="每个「山脉区域」内含一个主峰/主山脉（该区域最高），外围依次为次级山脉、山麓丘陵，区域之间融合为成片平原，大陆边缘过渡到深水海盆。峰值高度按区域随机分布，仅个别区域接近 Max Mountain。"
+            title="山脉 · 高原 · 平原合成"
+            note="Minecraft 1.18 式气候分带：低侵蚀带出全高山脉（PV 折叠噪声形成环状山脊+围谷+尖峰），中侵蚀带山体被削平为台地高原（软量化阶梯边缘），高侵蚀带起伏压缩为成片平原。每个「山脉区域」内仍保持主峰最高、外围次级山脉的层级。"
           >
             <div className="grid grid-cols-2 gap-x-4">
               <Slider label="区域尺寸 (m)" value={params.massifRegion} min={400} max={12000} step={100} decimals={0} onChange={(v) => set("massifRegion", v)} />
               <Slider label="区域山峰密度" value={params.massifDensity} min={0.05} max={1} step={0.01} decimals={2} onChange={(v) => set("massifDensity", v)} />
+              <Slider label="高原强度" value={params.plateauStrength} min={0} max={1} step={0.01} decimals={2} onChange={(v) => set("plateauStrength", v)} />
+              <Slider label="高原抬升" value={params.plateauLift} min={0} max={0.4} step={0.01} decimals={2} onChange={(v) => set("plateauLift", v)} />
+              <Slider label="平原化强度" value={params.plainStrength} min={0} max={1} step={0.01} decimals={2} onChange={(v) => set("plainStrength", v)} />
               <Slider label="Warp" value={params.warp} min={0} max={6} step={0.05} decimals={2} onChange={(v) => set("warp", v)} />
               <Slider label="Mountain Erosion" value={params.mountainErosion} min={0} max={1.5} step={0.01} decimals={2} onChange={(v) => set("mountainErosion", v)} />
               <Slider label="River Strength" value={params.riverStrength} min={0} max={3} step={0.05} decimals={2} onChange={(v) => set("riverStrength", v)} />

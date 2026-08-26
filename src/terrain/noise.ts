@@ -191,6 +191,29 @@ export class NoiseLib {
     out[0] = f1;
     out[1] = wSum > 0 ? ampSum / wSum : 0.5;
   }
+
+  /**
+   * 折叠峰谷噪声（Minecraft 1.18 "Peaks & Valleys"，即 folded ridges）：
+   *   PV = 1 - | 3 * |weirdness| - 2 |
+   * 其中 weirdness = FBM(x, y, oct) 输出（约 [-1, 1]）。
+   *
+   * 输出范围 [-1, 1]：+1 = 山脊/峰顶，-1 = 谷底。
+   * 相比普通 ridged 噪声，折叠变换的拓扑会发生「回折」——
+   * 峰链常常首尾相接围出一圈内部洼地（Minecraft 的 mountain rings），
+   * 山体因此呈现「环状山脊 + 围谷 + 次级峰群」而非单一穹顶。
+   *
+   * 数值行为（UE5 C++ 移植后的单元测试锚点）：
+   *   |w| = 0    → PV = -1（谷底）
+   *   |w| = 2/3  → PV = +1（脊顶）
+   *   |w| = 1    → PV =  0（坡面）
+   *
+   * 移植要点：纯函数、无内部状态，先取 FBM 再折叠即可；
+   * octaves 建议 2~4（过低无细节，过高会破坏环状拓扑的尺度感）。
+   */
+  peaksValleys2(x: number, y: number, oct: number) {
+    const w = this.fbm2(x, y, oct);
+    return 1 - Math.abs(3 * Math.abs(w) - 2);
+  }
 }
 
 export function clamp(x: number, a: number, b: number) {
@@ -201,4 +224,46 @@ export function smoothstep(e0: number, e1: number, x: number) {
   if (e0 === e1) return x < e0 ? 0 : 1;
   const t = clamp((x - e0) / (e1 - e0), 0, 1);
   return t * t * (3 - 2 * t);
+}
+
+/**
+ * 分段线性样条（Minecraft overworld noise-router 的 offset spline 思路）：
+ * 以升序控制点 (xs, ys) 把气候参数（大陆度 / 侵蚀度 / PV）映射为地形系数。
+ * 与硬编码 if-else 链相比，控制点即调参表，美术可直接改数值调地形分布。
+ *
+ * 契约：xs 严格升序；xs/ys 等长；x 越界取端点值。
+ * UE5 移植：TArray<FVector2D> 传入 + 线性扫描（控制点 ≤ 8 个，无需二分）。
+ */
+export function spline(x: number, xs: readonly number[], ys: readonly number[]) {
+  const n = xs.length;
+  if (n === 0) return 0;
+  if (x <= xs[0]) return ys[0];
+  if (x >= xs[n - 1]) return ys[n - 1];
+  for (let i = 1; i < n; i++) {
+    if (x <= xs[i]) {
+      const t = (x - xs[i - 1]) / (xs[i] - xs[i - 1]);
+      return ys[i - 1] + (ys[i] - ys[i - 1]) * t;
+    }
+  }
+  return ys[n - 1];
+}
+
+/**
+ * 软量化（阶梯地形通用整形）：把 [0,1] 连续场量化为 steps 级台阶，
+ * 台阶肩部用 smoothstep 过渡。
+ *
+ * 为什么不用 floor() 直接量化：floor 在台阶边界产生零宽度的垂直跳变，
+ * 网格化后就是「方块状断崖」；软量化保留台地形态但高度处处连续。
+ *
+ * UE5 移植：
+ *   float SoftQuant(float X, int Steps) {
+ *     float V = FMath::Clamp(X, 0.f, 1.f) * Steps;
+ *     float F = FMath::FloorToFloat(V);
+ *     return (F + SmoothStep(0.25f, 0.75f, V - F)) / Steps;
+ *   }
+ */
+export function softQuant(x: number, steps: number) {
+  const v = clamp(x, 0, 1) * steps;
+  const f = Math.floor(v);
+  return (f + smoothstep(0.25, 0.75, v - f)) / steps;
 }
